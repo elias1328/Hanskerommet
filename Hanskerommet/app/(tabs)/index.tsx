@@ -94,7 +94,7 @@ const fetchCarDetails = async (plate: string): Promise<Car> => {
   // 2. REAL API MODE (Only if you have a working Backend/Key)
   // Note: Statens Vegvesen API usually requires a Server Proxy, not direct App calls.
   try {
-    const API_KEY = 'c79036f0-62d1-4c1e-9e03-240e757c32ba'; // Do not commit this to GitHub
+    const API_KEY = 'xxx'; // Do not commit this to GitHub
     const url = `https://www.vegvesen.no/ws/no/vegvesen/kjoretoy/felles/datautlevering/enkeltoppslag/kjoretoydata?kjennemerke=${plate.replace(/\s/g, '')}`;
 
     const response = await fetch(url, {
