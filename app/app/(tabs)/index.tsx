@@ -12,12 +12,12 @@ import {
   ActivityIndicator,
   FlatList,
   Modal,
-  SafeAreaView,
   LayoutAnimation,
   UIManager,
   ImageBackground,
   Dimensions
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient'; // Ensure you have expo-linear-gradient installed, or remove if standard Expo
@@ -65,11 +65,11 @@ interface Car {
   nextEU: string;
   mileage: number;
   // Specs (Nullable so we can edit them)
-  trailerWeight: string | null; 
-  tireSizeFront: string | null;      
-  tireSizeRear: string | null;      
-  fuelType: string | null;      
-  power: string | null;         
+  topSpeed: string | null;
+  engineLiters: string | null;
+  totalWeight: string | null;
+  seats: string | null;
+  fuelType: string | null;
 }
 
 // --- 2. THEME (MIDNIGHT EDITION) ---
@@ -97,11 +97,11 @@ const getMockCar = (plate: string): Car => ({
   vin: 'WVWZZZ1K99...',
   nextEU: '2025-10-20',
   mileage: 85000,
-  trailerWeight: '1600 kg',
-  tireSizeFront: '225/40 R18',
-  tireSizeRear: '225/40 R18',
-  fuelType: 'Bensin',
-  power: '245 HK'
+  topSpeed: '250 km/h',
+  engineLiters: '2.0 L',
+  totalWeight: '1900 kg',
+  seats: '4',
+  fuelType: 'Bensin'
 });
 
 const fetchCarDetails = async (plate: string): Promise<Car> => {
@@ -122,28 +122,32 @@ const fetchCarDetails = async (plate: string): Promise<Car> => {
   const tech = raw.godkjenning?.tekniskGodkjenning?.tekniskeData;
   const gen = tech?.generelt;
   
-  // Power Calc
-  const kw = tech?.motorOgYtelse?.motor?.[0]?.ytelse?.maksimalNettoEffekt;
-  const hp = kw ? Math.round(kw * 1.341) : null;
-
-  // Tires (Front/Rear might differ)
-  const axles = tech?.dekkOgFelg?.aksler || [];
-  const frontTire = axles.find((a: any) => a.plasseringAksel === 'AKSEL_1')?.dekkdimensjon || null;
-  const rearTire = axles.find((a: any) => a.plasseringAksel === 'AKSEL_2')?.dekkdimensjon || frontTire;
+  const topSpeed = tech?.motorOgDrivverk?.maksimumHastighet?.[0] || null;
+  const displacement = tech?.motorOgDrivverk?.motor?.[0]?.slagvolum || null;
+  const totalWeight = tech?.vekter?.tillattTotalvekt || null;
+  const seatsTotal = tech?.persontall?.sitteplasserTotalt || null;
+  const fuel =
+    tech?.motorOgDrivverk?.motor?.[0]?.drivstoff?.[0]?.drivstoffKode?.kodeBeskrivelse ||
+    tech?.miljodata?.miljoOgdrivstoffGruppe?.[0]?.drivstoffKodeMiljodata?.kodeBeskrivelse ||
+    null;
 
   return {
     plate: raw.kjennemerke?.[0]?.kjennemerke || plate,
     make: gen?.merke?.[0]?.merke || 'Unknown',
     model: gen?.handelsbetegnelse?.[0] || 'Unknown',
-    year: raw.forstegangsregistrering?.registrertForstegangNorgeDato ? new Date(raw.forstegangsregistrering.registrertForstegangNorgeDato).getFullYear() : 2000,
+    year: raw?.godkjenning?.forstegangsGodkjenning?.forstegangRegistrertDato
+      ? new Date(raw.godkjenning.forstegangsGodkjenning.forstegangRegistrertDato).getFullYear()
+      : raw.forstegangsregistrering?.registrertForstegangNorgeDato
+        ? new Date(raw.forstegangsregistrering.registrertForstegangNorgeDato).getFullYear()
+        : 2000,
     vin: raw.kjoretoyId?.understellsnummer || 'Unknown',
     nextEU: raw.periodiskKjoretoyKontroll?.kontrollfrist || 'N/A',
-    mileage: 0,
-    trailerWeight: tech?.vekter?.tilhengervektMedBrems ? `${tech.vekter.tilhengervektMedBrems} kg` : null,
-    tireSizeFront: frontTire,
-    tireSizeRear: rearTire,
-    fuelType: tech?.motorOgYtelse?.motor?.[0]?.drivstoff?.[0]?.drivstoffKode?.kodeNavn || null,
-    power: hp ? `${hp} HK` : null
+    mileage: raw?.godkjenning?.forstegangsGodkjenning?.bruktimport?.kilometerstand || 0,
+    topSpeed: topSpeed ? `${topSpeed} km/h` : null,
+    engineLiters: displacement ? `${(displacement / 1000).toFixed(1)} L` : null,
+    totalWeight: totalWeight ? `${totalWeight} kg` : null,
+    seats: seatsTotal ? String(seatsTotal) : null,
+    fuelType: fuel
   };
 };
 
@@ -371,11 +375,11 @@ const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onEditSpec, onViewA
         </View>
         
         <View style={styles.grid}>
-          <SpecBox label="Power" value={car.power} icon="flash" onPress={() => onEditSpec('power', 'Power')} />
+          <SpecBox label="Top Speed" value={car.topSpeed} icon="speedometer" onPress={() => onEditSpec('topSpeed', 'Top Speed')} />
           <SpecBox label="Fuel" value={car.fuelType} icon="water" onPress={() => onEditSpec('fuelType', 'Fuel Type')} />
-          <SpecBox label="Front Tire" value={car.tireSizeFront} icon="disc" onPress={() => onEditSpec('tireSizeFront', 'Front Tires')} />
-          <SpecBox label="Rear Tire" value={car.tireSizeRear} icon="disc" onPress={() => onEditSpec('tireSizeRear', 'Rear Tires')} />
-          <SpecBox label="Towing" value={car.trailerWeight} icon="car" onPress={() => onEditSpec('trailerWeight', 'Towing Capacity')} />
+          <SpecBox label="Engine" value={car.engineLiters} icon="cog" onPress={() => onEditSpec('engineLiters', 'Engine')} />
+          <SpecBox label="Total Weight" value={car.totalWeight} icon="barbell" onPress={() => onEditSpec('totalWeight', 'Total Weight')} />
+          <SpecBox label="Seats" value={car.seats} icon="people" onPress={() => onEditSpec('seats', 'Seats')} />
           <SpecBox label="Year" value={car.year.toString()} icon="calendar-number" onPress={() => {}} />
         </View>
       </View>
