@@ -107,12 +107,11 @@ const getMockCar = (plate: string): Car => ({
 const fetchCarDetails = async (plate: string): Promise<Car> => {
   if (USE_MOCK_API) return new Promise(r => setTimeout(() => r(getMockCar(plate)), 1000));
 
-  const API_KEY = process.env.EXPO_PUBLIC_API_KEY;
-  const url = `https://www.vegvesen.no/ws/no/vegvesen/kjoretoy/felles/datautlevering/enkeltoppslag/kjoretoydata?kjennemerke=${plate.replace(/\s/g, '')}`;
+  const apiBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL;
+  if (!apiBaseUrl) throw new Error('Missing EXPO_PUBLIC_API_BASE_URL');
 
-  const response = await fetch(url, {
-    headers: { 'SVV-Authorization': `Apikey ${API_KEY}`, 'Accept': 'application/json' }
-  });
+  const url = `${apiBaseUrl.replace(/\/$/, '')}/car?plate=${encodeURIComponent(plate.replace(/\s/g, ''))}`;
+  const response = await fetch(url);
 
   if (!response.ok) throw new Error(`API Error: ${response.status}`);
   const data = await response.json();
