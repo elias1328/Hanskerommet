@@ -9,6 +9,7 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  useColorScheme,
   ActivityIndicator,
   FlatList,
   Modal,
@@ -26,6 +27,7 @@ import { BlurView } from 'expo-blur';
 import PagerView from 'react-native-pager-view';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Swipeable } from 'react-native-gesture-handler';
+import { getBrandLogo } from '../../brand-logos';
 
 // Enable LayoutAnimation for Android
 if (Platform.OS === 'android') {
@@ -36,8 +38,6 @@ if (Platform.OS === 'android') {
 
 // --- CONFIGURATION ---
 const USE_MOCK_API = false; // Set to true if you hit API limits
-const TIRE_CHANGE_MONTH_WINTER = 9; // October (0-indexed)
-const TIRE_CHANGE_MONTH_SUMMER = 3; // April
 
 // --- 1. TYPES ---
 
@@ -77,9 +77,21 @@ interface Car {
   fuelType: string | null;
 }
 
-// --- 2. THEME (IOS LIGHT) ---
+const formatDistance = (km: number, units: 'km' | 'mi') => {
+  if (units === 'mi') {
+    const miles = km * 0.621371;
+    return `${miles.toLocaleString(undefined, { maximumFractionDigits: 0 })} mi`;
+  }
+  return `${km.toLocaleString()} km`;
+};
 
-const THEME = {
+const toKilometers = (value: number, units: 'km' | 'mi') =>
+  units === 'mi' ? Math.round(value / 0.621371) : Math.round(value);
+
+// --- 2. THEMES ---
+
+const LIGHT_THEME = {
+  scheme: 'light' as const,
   bg: '#F2F2F7',
   card: '#FFFFFF',
   cardBorder: '#E5E5EA',
@@ -91,6 +103,39 @@ const THEME = {
   text: '#1C1C1E',
   textDim: '#8E8E93',
   surface: '#F9F9FB',
+  tabBarBg: 'rgba(255,255,255,0.7)',
+  tabBarBorder: 'rgba(229,229,234,0.8)',
+  blurTint: 'light' as const,
+};
+
+const DARK_THEME = {
+  scheme: 'dark' as const,
+  bg: '#0B0D10',
+  card: '#14171C',
+  cardBorder: '#232834',
+  primary: '#0A84FF',
+  accent: '#BF5AF2',
+  success: '#32D74B',
+  warning: '#FF9F0A',
+  danger: '#FF453A',
+  text: '#F2F2F7',
+  textDim: '#8E8E93',
+  surface: '#1C1F26',
+  tabBarBg: 'rgba(20,23,28,0.72)',
+  tabBarBorder: 'rgba(44,48,58,0.9)',
+  blurTint: 'dark' as const,
+};
+
+const ThemeContext = React.createContext({
+  theme: LIGHT_THEME,
+  statusBarStyle: 'dark' as 'light' | 'dark'
+});
+const StylesContext = React.createContext<ReturnType<typeof createStyles> | null>(null);
+
+const useTheme = () => React.useContext(ThemeContext);
+const useStyles = () => {
+  const ctx = React.useContext(StylesContext);
+  return ctx || createStyles(LIGHT_THEME);
 };
 
 // --- 3. API SERVICE ---
@@ -117,7 +162,19 @@ const fetchCarDetails = async (plate: string): Promise<Car> => {
   if (!apiBaseUrl) throw new Error('Missing EXPO_PUBLIC_API_BASE_URL');
 
   const url = `${apiBaseUrl.replace(/\/$/, '')}/car?plate=${encodeURIComponent(plate.replace(/\s/g, ''))}`;
-  const response = await fetch(url);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+  let response: Response;
+  try {
+    response = await fetch(url, { signal: controller.signal });
+  } catch (error: any) {
+    if (error?.name === 'AbortError') {
+      throw new Error('Request timed out. Check server or network.');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) throw new Error(`API Error: ${response.status}`);
   const data = await response.json();
@@ -181,10 +238,20 @@ export default function App() {
     { id: '1', title: 'Insurance Policy', expiry: '2025-01-01', type: 'insurance' },
     { id: '2', title: 'Vognkort (Del 2)', expiry: 'Never', type: 'vognkort' }
   ]);
+  const [units, setUnits] = useState<'km' | 'mi'>('km');
+  const [appTheme, setAppTheme] = useState<'system' | 'light' | 'dark'>('system');
+  const colorScheme = useColorScheme();
+
+  const resolvedTheme = appTheme === 'system' ? (colorScheme ?? 'light') : appTheme;
+  const theme = useMemo(
+    () => (resolvedTheme === 'dark' ? DARK_THEME : LIGHT_THEME),
+    [resolvedTheme]
+  );
+  const styles = useMemo(() => createStyles(theme), [theme]);
+  const statusBarStyle: 'light' | 'dark' = resolvedTheme === 'dark' ? 'light' : 'dark';
   
   // Modals
-  const [modals, setModals] = useState({ addLog: false, mileage: false, editSpec: false, types: false });
-  const [specToEdit, setSpecToEdit] = useState<{key: keyof Car, label: string} | null>(null);
+  const [modals, setModals] = useState({ addLog: false, mileage: false, types: false });
 
   // --- ACTIONS ---
   useEffect(() => {
@@ -231,6 +298,32 @@ export default function App() {
         setModals((prev) => ({ ...prev, types: false }));
       }
     });
+  };
+
+  const openMileageInput = () => {
+    const currentValue =
+      units === 'mi'
+        ? Math.round((car?.mileage || 0) * 0.621371)
+        : car?.mileage || 0;
+    if (Platform.OS === 'ios') {
+      Alert.prompt(
+        'Update Odometer',
+        '',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Save',
+            onPress: (value) =>
+              handleUpdateMileage(toKilometers(parseInt(String(value), 10) || 0, units))
+          }
+        ],
+        'plain-text',
+        currentValue.toString()
+      );
+      return;
+    }
+
+    setModals((prev) => ({ ...prev, mileage: true }));
   };
 
   const navigateTo = (nextView: 'garage' | 'vault' | 'logs' | 'config') => {
@@ -284,12 +377,6 @@ export default function App() {
     setModals({ ...modals, mileage: false });
   };
 
-  const handleUpdateSpec = (val: string) => {
-    if (!car || !specToEdit) return;
-    setCar({ ...car, [specToEdit.key]: val });
-    setModals({ ...modals, editSpec: false });
-  };
-
   const handleAddLog = (log: ServiceLog) => {
     // If mileage increased in log, update car
     if (car && log.mileage > car.mileage) {
@@ -307,136 +394,156 @@ export default function App() {
 
   // --- RENDER ---
 
-  if (view === 'onboarding') return <Onboarding onRegister={handleRegister} />;
-
   return (
-    <View style={styles.container}>
-      <StatusBar style="dark" />
-      
-      {/* Dynamic Header Area (Part of ScrollView in sub-screens, or Fixed) */}
-      <SafeAreaView style={{ flex: 1 }}>
-        <PagerView
-          ref={pagerRef}
-          style={{ flex: 1 }}
-          initialPage={0}
-          onPageSelected={(event) => {
-            const nextView = tabKeys[event.nativeEvent.position];
-            if (nextView) setView(nextView);
-          }}>
-          <View key="garage" style={{ flex: 1 }}>
-            <GarageScreen 
-              car={car!} 
-              logs={logs} 
-              onOpenLog={openAddLog}
-              onOpenMileage={() => setModals({...modals, mileage: true})}
-              onEditSpec={(key, label) => { setSpecToEdit({key, label}); setModals({...modals, editSpec: true}); }}
-              onViewAllLogs={() => navigateTo('logs')}
-            />
-          </View>
-          <View key="logs" style={{ flex: 1 }}>
-            <TimelineScreen logs={logs} onOpenLog={() => setModals({ ...modals, addLog: true })} />
-          </View>
-          <View key="vault" style={{ flex: 1 }}>
-            <VaultScreen docs={docs} />
-          </View>
-          <View key="config" style={{ flex: 1 }}>
-            <ConfigScreen car={car!} onDelete={deleteCar} />
-          </View>
-        </PagerView>
+    <ThemeContext.Provider value={{ theme, statusBarStyle }}>
+      <StylesContext.Provider value={styles}>
+        {view === 'onboarding' ? (
+          <Onboarding onRegister={handleRegister} />
+        ) : (
+          <View style={styles.container}>
+            <StatusBar style={statusBarStyle} />
 
-        {/* --- CUSTOM TAB BAR (Perfectly Centered FAB) --- */}
-        <View style={[styles.tabBarContainer, { height: 49 + insets.bottom }]}>
-          <BlurView intensity={50} tint="light" style={[styles.tabBar, { paddingBottom: insets.bottom }]}>
-            <View style={styles.tabBarContent}>
-              <TabBtn icon="car-sport" label="Garage" active={view === 'garage'} onPress={() => navigateTo('garage')} />
-              <TabBtn icon="document-text" label="Logs" active={view === 'logs'} onPress={() => navigateTo('logs')} />
-              <TabBtn icon="file-tray-full" label="Vault" active={view === 'vault'} onPress={() => navigateTo('vault')} />
-              <TabBtn icon="settings" label="Config" active={view === 'config'} onPress={() => navigateTo('config')} />
-            </View>
-          </BlurView>
+            {/* Dynamic Header Area (Part of ScrollView in sub-screens, or Fixed) */}
+            <SafeAreaView style={{ flex: 1, backgroundColor: theme.bg }}>
+              <PagerView
+                ref={pagerRef}
+                style={{ flex: 1 }}
+                initialPage={0}
+                onPageSelected={(event) => {
+                  const nextView = tabKeys[event.nativeEvent.position];
+                  if (nextView) setView(nextView);
+                }}>
+                <View key="garage" style={{ flex: 1, backgroundColor: theme.bg }}>
+                  <GarageScreen 
+                    car={car!} 
+                    logs={logs} 
+                    onOpenLog={openAddLog}
+                    onOpenMileage={openMileageInput}
+                    onViewAllLogs={() => navigateTo('logs')}
+                    units={units}
+                  />
+                </View>
+                <View key="logs" style={{ flex: 1, backgroundColor: theme.bg }}>
+                  <TimelineScreen
+                    logs={logs}
+                    onOpenLog={() => setModals({ ...modals, addLog: true })}
+                    themeKey={resolvedTheme}
+                    units={units}
+                  />
+                </View>
+                <View key="vault" style={{ flex: 1, backgroundColor: theme.bg }}>
+                  <VaultScreen docs={docs} themeKey={resolvedTheme} />
+                </View>
+                <View key="config" style={{ flex: 1, backgroundColor: theme.bg }}>
+                  <ConfigScreen
+                    car={car!}
+                    onDelete={deleteCar}
+                    onChangeCar={() => setView('onboarding')}
+                    units={units}
+                    appTheme={appTheme}
+                    onChangeUnits={setUnits}
+                    onChangeAppTheme={setAppTheme}
+                  />
+                </View>
+              </PagerView>
 
-        </View>
+              {/* --- CUSTOM TAB BAR (Perfectly Centered FAB) --- */}
+              <View style={[styles.tabBarContainer, { height: 49 + insets.bottom }]}>
+                <BlurView intensity={50} tint={theme.blurTint} style={[styles.tabBar, { paddingBottom: insets.bottom }]}>
+                  <View style={styles.tabBarContent}>
+                    <TabBtn icon="car-sport" label="Garage" active={view === 'garage'} onPress={() => navigateTo('garage')} />
+                    <TabBtn icon="document-text" label="Logs" active={view === 'logs'} onPress={() => navigateTo('logs')} />
+                    <TabBtn icon="file-tray-full" label="Vault" active={view === 'vault'} onPress={() => navigateTo('vault')} />
+                    <TabBtn icon="settings" label="Config" active={view === 'config'} onPress={() => navigateTo('config')} />
+                  </View>
+                </BlurView>
 
-        {/* --- MODALS --- */}
-        {modals.addLog && (
-          <Animated.View style={[styles.addLogOverlay, { transform: [{ translateX: addLogX }] }]}>
-            <AddLogModal
-              onClose={closeAddLog}
+              </View>
+
+              {/* --- MODALS --- */}
+              {modals.addLog && (
+                <Animated.View style={[styles.addLogOverlay, { transform: [{ translateX: addLogX }] }]}>
+                  <AddLogModal
+                    onClose={closeAddLog}
               onSave={(log: ServiceLog) => { handleAddLog(log); closeAddLog(); setSelectedLogType('service'); }}
-              mileagePlaceholder={car ? car.mileage.toString() : 'Auto'}
+              mileagePlaceholder={car ? formatDistance(car.mileage, units).replace(/\\s?(km|mi)$/, '') : 'Auto'}
               logTypes={logTypes}
               logType={selectedLogType}
               onManageTypes={openTypes}
+              units={units}
             />
           </Animated.View>
         )}
-        {modals.types && (
-          <Animated.View style={[styles.addLogOverlay, { transform: [{ translateX: typesX }] }]}>
-            <TypesPage
-              types={logTypes}
-              selectedType={logTypes.includes(selectedLogType) ? selectedLogType : logTypes[0]}
-              onSelectType={(value: string) => {
-                setSelectedLogType(value);
-                closeTypes();
-              }}
-              onClose={closeTypes}
-              onAddType={(value: string) => {
-                const clean = value.trim();
-                if (!clean) return;
-                setLogTypes((prev) => {
-                  if (prev.includes(clean)) return prev;
-                  return [...prev, clean];
-                });
-              }}
-              onRemoveType={(value: string) =>
-                setLogTypes((prev) => {
-                  const next = prev.filter((type) => type !== value);
-                  if (value === selectedLogType) {
-                    setSelectedLogType(next[0] || 'service');
-                  }
-                  return next.length ? next : ['service'];
-                })
-              }
-            />
-          </Animated.View>
-        )}
-        <SimpleInputModal
-          visible={modals.mileage}
-          title="Update Odometer"
-          placeholder={car?.mileage.toString()}
+              {modals.types && (
+                <Animated.View style={[styles.addLogOverlay, { transform: [{ translateX: typesX }] }]}>
+                  <TypesPage
+                    types={logTypes}
+                    selectedType={logTypes.includes(selectedLogType) ? selectedLogType : logTypes[0]}
+                    onSelectType={(value: string) => {
+                      setSelectedLogType(value);
+                      closeTypes();
+                    }}
+                    onClose={closeTypes}
+                    onAddType={(value: string) => {
+                      const clean = value.trim();
+                      if (!clean) return;
+                      setLogTypes((prev) => {
+                        if (prev.includes(clean)) return prev;
+                        return [...prev, clean];
+                      });
+                    }}
+                    onRemoveType={(value: string) =>
+                      setLogTypes((prev) => {
+                        const next = prev.filter((type) => type !== value);
+                        if (value === selectedLogType) {
+                          setSelectedLogType(next[0] || 'service');
+                        }
+                        return next.length ? next : ['service'];
+                      })
+                    }
+                  />
+                </Animated.View>
+              )}
+              <SimpleInputModal
+                visible={modals.mileage}
+                title="Update Odometer"
+          placeholder={
+            car
+              ? formatDistance(car.mileage, units).replace(/\\s?(km|mi)$/, '')
+              : undefined
+          }
           keyboard="numeric"
           onClose={() => setModals({...modals, mileage: false})}
-          onSave={(val) => handleUpdateMileage(parseInt(val) || 0)}
+          onSave={(val) => handleUpdateMileage(toKilometers(parseInt(val) || 0, units))}
+          units={units}
         />
-        <SimpleInputModal
-          visible={modals.editSpec}
-          title={`Edit ${specToEdit?.label}`}
-          placeholder="Enter value..."
-          keyboard="default"
-          onClose={() => setModals({...modals, editSpec: false})}
-          onSave={handleUpdateSpec}
-        />
-
-      </SafeAreaView>
-    </View>
+            </SafeAreaView>
+          </View>
+        )}
+      </StylesContext.Provider>
+    </ThemeContext.Provider>
   );
 }
 
 // --- SCREENS ---
 
-const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onEditSpec, onViewAllLogs }: any) => {
-  const currentMonth = new Date().getMonth();
-  const isWinterTireSeason = currentMonth >= TIRE_CHANGE_MONTH_WINTER || currentMonth <= TIRE_CHANGE_MONTH_SUMMER;
+const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, units }: any) => {
+  const { theme } = useTheme();
+  const styles = useStyles();
   const daysToEu = Math.ceil((new Date(car.nextEU).getTime() - new Date().getTime()) / (1000 * 3600 * 24));
   const euStatus = daysToEu < 30 ? 'danger' : daysToEu < 120 ? 'warning' : 'success';
   const lastExpense = logs.find((log: ServiceLog) => log.cost > 0)?.cost || 0;
+  const plateDisplay = String(car.plate || '').replace(/\s+/g, '');
+  const BrandLogo = getBrandLogo(car.make);
 
   return (
-    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 140 }}>
+    <ScrollView
+      style={{ flex: 1, backgroundColor: theme.bg }}
+      contentContainerStyle={{ paddingBottom: 140 }}
+    >
       <View style={styles.headerBar}>
         <View>
           <Text style={styles.headerTitle}>Glovebox</Text>
-          <Text style={styles.headerSub}>Vehicle overview</Text>
         </View>
         <TouchableOpacity style={styles.headerPill} onPress={onOpenLog}>
           <Ionicons name="add" size={16} color="white" />
@@ -446,24 +553,22 @@ const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onEditSpec, onViewA
 
       {/* Hero Card */}
       <View style={styles.heroContainer}>
-        <View style={styles.heroHeader}>
+        <View style={styles.heroTopRow}>
           <Text style={styles.heroBrand}>{car.make}</Text>
-          <View style={styles.plateTag}><Text style={styles.plateText}>{car.plate}</Text></View>
+          {BrandLogo ? (
+            <View style={styles.brandLogoWrap}>
+              <BrandLogo width="100%" height="100%" preserveAspectRatio="xMidYMid meet" />
+            </View>
+          ) : (
+            <Text style={styles.heroLogo}>LOGO</Text>
+          )}
         </View>
         <Text style={styles.heroModel}>{car.model}</Text>
-        <Text style={styles.heroVin}>{car.vin}</Text>
-
-        <View style={styles.heroMetaRow}>
-          <Text style={styles.heroMeta}>{car.year}</Text>
-          <Text style={styles.heroMetaDot}>|</Text>
-          <Text style={styles.heroMeta}>{car.fuelType || 'Fuel'}</Text>
+        <View style={styles.heroBottomRow}>
+          <Text style={styles.heroLinePlate}>{car.year}</Text>
+          <Text style={styles.heroLinePlate}>{plateDisplay}</Text>
         </View>
 
-        <TouchableOpacity style={styles.mileageBtn} onPress={onOpenMileage}>
-          <Ionicons name="speedometer-outline" size={20} color={THEME.primary} />
-          <Text style={styles.mileageText}>{car.mileage.toLocaleString()} km</Text>
-          <Ionicons name="pencil" size={12} color={THEME.textDim} style={{marginLeft: 8}}/>
-        </TouchableOpacity>
       </View>
 
       {/* Health Tiles */}
@@ -471,50 +576,34 @@ const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onEditSpec, onViewA
         <Text style={styles.sectionTitle}>STATUS</Text>
         <View style={styles.tileGrid}>
           <InfoTile
+            label="Odometer"
+            value={formatDistance(car.mileage, units)}
+            sub="Tap to update"
+            tone={theme.primary}
+            icon="speedometer"
+            onPress={onOpenMileage}
+          />
+          <InfoTile
             label="EU Control"
             value={daysToEu < 0 ? 'Overdue' : `${daysToEu} days`}
             sub={car.nextEU}
-            tone={THEME[euStatus]}
+            tone={theme[euStatus]}
             icon="calendar"
-          />
-          <InfoTile
-            label="Season"
-            value={isWinterTireSeason ? 'Winter' : 'Summer'}
-            sub="Tires"
-            tone={isWinterTireSeason ? THEME.primary : THEME.warning}
-            icon="snow"
           />
           <InfoTile
             label="Total Cost"
             value={`${logs.reduce((a:any,b:any)=>a+b.cost,0)} kr`}
             sub="Lifetime"
-            tone={THEME.accent}
+            tone={theme.accent}
             icon="wallet"
           />
           <InfoTile
             label="Last Expense"
             value={`${lastExpense} kr`}
             sub="Most recent"
-            tone={THEME.success}
+            tone={theme.success}
             icon="cash"
           />
-        </View>
-      </View>
-
-      {/* Interactive Specs Grid */}
-      <View style={styles.section}>
-        <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center'}}>
-          <Text style={styles.sectionTitle}>TECHNICAL SPECS</Text>
-          <Text style={{color: THEME.textDim, fontSize: 12}}>Tap to edit</Text>
-        </View>
-
-        <View style={styles.grid}>
-          <SpecBox label="Top Speed" value={car.topSpeed} icon="speedometer" onPress={() => onEditSpec('topSpeed', 'Top Speed')} />
-          <SpecBox label="Fuel" value={car.fuelType} icon="water" onPress={() => onEditSpec('fuelType', 'Fuel Type')} />
-          <SpecBox label="Engine" value={car.engineLiters} icon="cog" onPress={() => onEditSpec('engineLiters', 'Engine')} />
-          <SpecBox label="Total Weight" value={car.totalWeight} icon="barbell" onPress={() => onEditSpec('totalWeight', 'Total Weight')} />
-          <SpecBox label="Seats" value={car.seats} icon="people" onPress={() => onEditSpec('seats', 'Seats')} />
-          <SpecBox label="Year" value={car.year.toString()} icon="calendar-number" onPress={() => {}} />
         </View>
       </View>
 
@@ -522,17 +611,20 @@ const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onEditSpec, onViewA
       <View style={styles.section}>
         <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10}}>
           <Text style={styles.sectionTitle}>RECENT ACTIVITY</Text>
-          <TouchableOpacity onPress={onViewAllLogs}><Text style={{color: THEME.primary, fontWeight: '600'}}>View All</Text></TouchableOpacity>
+          <TouchableOpacity onPress={onViewAllLogs}><Text style={{color: theme.primary, fontWeight: '600'}}>View All</Text></TouchableOpacity>
         </View>
-        {logs.slice(0,3).map((l: ServiceLog) => <LogRow key={l.id} log={l} />)}
+        {logs.slice(0,3).map((l: ServiceLog) => <LogRow key={l.id} log={l} units={units} />)}
       </View>
 
     </ScrollView>
   );
 };
 
-const VaultScreen = ({ docs }: { docs: Doc[] }) => (
-  <View style={styles.screenContainer}>
+const VaultScreen = ({ docs, themeKey }: { docs: Doc[]; themeKey: string }) => {
+  const { theme } = useTheme();
+  const styles = useStyles();
+  return (
+    <View style={styles.screenContainer}>
     <View style={styles.pageHeaderRow}>
       <View>
         <Text style={styles.pageTitle}>Vault</Text>
@@ -546,26 +638,32 @@ const VaultScreen = ({ docs }: { docs: Doc[] }) => (
     </View>
     
     <FlatList
+      style={{ backgroundColor: theme.bg }}
       data={docs}
+      extraData={themeKey}
       keyExtractor={d => d.id}
       renderItem={({item}) => (
         <TouchableOpacity style={styles.docRow}>
-          <View style={[styles.docIcon, { backgroundColor: item.type === 'insurance' ? THEME.success : THEME.accent }]}>
+          <View style={[styles.docIcon, { backgroundColor: item.type === 'insurance' ? theme.success : theme.accent }]}>
             <Ionicons name="document-text" size={22} color="white" />
           </View>
           <View style={{flex: 1}}>
             <Text style={styles.docTitle}>{item.title}</Text>
             <Text style={styles.docSub}>Expires: {item.expiry}</Text>
           </View>
-          <Ionicons name="chevron-forward" size={20} color={THEME.textDim} />
+          <Ionicons name="chevron-forward" size={20} color={theme.textDim} />
         </TouchableOpacity>
       )}
     />
   </View>
-);
+  );
+};
 
-const TimelineScreen = ({ logs, onOpenLog }: { logs: ServiceLog[]; onOpenLog: () => void }) => (
-  <View style={styles.screenContainer}>
+const TimelineScreen = ({ logs, onOpenLog, themeKey, units }: { logs: ServiceLog[]; onOpenLog: () => void; themeKey: string; units: 'km' | 'mi' }) => {
+  const { theme } = useTheme();
+  const styles = useStyles();
+  return (
+    <View style={styles.screenContainer}>
     <View style={styles.pageHeaderRow}>
       <View>
         <Text style={styles.pageTitle}>Service Log</Text>
@@ -575,112 +673,163 @@ const TimelineScreen = ({ logs, onOpenLog }: { logs: ServiceLog[]; onOpenLog: ()
         <Ionicons name="add" size={20} color="white" />
       </TouchableOpacity>
     </View>
-    <FlatList 
+    <FlatList
+      style={{ backgroundColor: theme.bg }}
       data={logs}
+      extraData={themeKey}
       keyExtractor={l => l.id}
       contentContainerStyle={{paddingBottom: 100}}
-      renderItem={({item}) => <LogRow log={item} />}
+      renderItem={({item}) => <LogRow log={item} units={units} />}
     />
   </View>
-);
+  );
+};
 
-const ConfigScreen = ({ car, onDelete }: any) => (
-  <View style={styles.screenContainer}>
+const ConfigScreen = ({ car, onDelete, onChangeCar, units, appTheme, onChangeUnits, onChangeAppTheme }: any) => {
+  const { theme } = useTheme();
+  const styles = useStyles();
+  return (
+    <View style={styles.screenContainer}>
     <Text style={styles.pageTitle}>Settings</Text>
     
-    <View style={styles.configSection}>
-      <Text style={styles.configHeader}>VEHICLE</Text>
-      <View style={styles.configRow}>
-        <Text style={styles.configLabel}>Plate Number</Text>
-        <Text style={styles.configValue}>{car.plate}</Text>
+    <Text style={styles.settingsHeader}>VEHICLE</Text>
+    <View style={styles.settingsGroup}>
+      <View style={styles.settingsRow}>
+        <Text style={styles.settingsLabel}>Plate Number</Text>
+        <Text style={styles.settingsValue}>{car.plate}</Text>
       </View>
-      <View style={styles.configRow}>
-        <Text style={styles.configLabel}>VIN</Text>
-        <Text style={styles.configValue}>{car.vin}</Text>
+      <View style={styles.settingsDivider} />
+      <View style={styles.settingsRow}>
+        <Text style={styles.settingsLabel}>VIN</Text>
+        <Text style={styles.settingsValue}>{car.vin}</Text>
       </View>
+      <View style={styles.settingsDivider} />
+      <TouchableOpacity style={styles.settingsRow} onPress={onChangeCar}>
+        <Text style={styles.settingsLabel}>Change Car</Text>
+        <Ionicons name="chevron-forward" size={18} color={theme.textDim} />
+      </TouchableOpacity>
     </View>
 
-    <View style={styles.configSection}>
-      <Text style={styles.configHeader}>PREFERENCES</Text>
-      <View style={styles.configRow}>
-        <Text style={styles.configLabel}>Dark Mode</Text>
-        <Text style={{color: THEME.success, fontWeight: '600'}}>Always on</Text>
-      </View>
-      <View style={styles.configRow}>
-        <Text style={styles.configLabel}>Currency</Text>
-        <Text style={styles.configValue}>NOK (kr)</Text>
-      </View>
+    <Text style={styles.settingsHeader}>Units</Text>
+    <View style={styles.settingsGroup}>
+      <TouchableOpacity style={styles.settingsChoiceRow} onPress={() => onChangeUnits('km')}>
+        <Text style={styles.settingsChoiceLabel}>Kilometers</Text>
+        {units === 'km' && <Ionicons name="checkmark" size={18} color={theme.primary} />}
+      </TouchableOpacity>
+      <View style={styles.settingsDivider} />
+      <TouchableOpacity style={styles.settingsChoiceRow} onPress={() => onChangeUnits('mi')}>
+        <Text style={styles.settingsChoiceLabel}>Miles</Text>
+        {units === 'mi' && <Ionicons name="checkmark" size={18} color={theme.primary} />}
+      </TouchableOpacity>
     </View>
 
-    <TouchableOpacity style={styles.dangerBtn} onPress={onDelete}>
-      <Ionicons name="trash" size={20} color="white" />
-      <Text style={{color: 'white', fontWeight: '600', marginLeft: 10}}>Delete Vehicle</Text>
-    </TouchableOpacity>
+    <Text style={styles.settingsHeader}>App Theme</Text>
+    <View style={styles.settingsGroup}>
+      <TouchableOpacity style={styles.settingsChoiceRow} onPress={() => onChangeAppTheme('system')}>
+        <Text style={styles.settingsChoiceLabel}>System</Text>
+        {appTheme === 'system' && <Ionicons name="checkmark" size={18} color={theme.primary} />}
+      </TouchableOpacity>
+      <View style={styles.settingsDivider} />
+      <TouchableOpacity style={styles.settingsChoiceRow} onPress={() => onChangeAppTheme('light')}>
+        <Text style={styles.settingsChoiceLabel}>Light</Text>
+        {appTheme === 'light' && <Ionicons name="checkmark" size={18} color={theme.primary} />}
+      </TouchableOpacity>
+      <View style={styles.settingsDivider} />
+      <TouchableOpacity style={styles.settingsChoiceRow} onPress={() => onChangeAppTheme('dark')}>
+        <Text style={styles.settingsChoiceLabel}>Dark</Text>
+        {appTheme === 'dark' && <Ionicons name="checkmark" size={18} color={theme.primary} />}
+      </TouchableOpacity>
+    </View>
+
+    <View style={styles.settingsGroup}>
+      <TouchableOpacity style={styles.settingsRow} onPress={onDelete}>
+        <Text style={styles.settingsDestructive}>Delete Vehicle</Text>
+      </TouchableOpacity>
+    </View>
   </View>
-);
+  );
+};
 
 // --- COMPONENTS ---
 
-const SpecBox = ({ label, value, icon, onPress }: any) => (
-  <TouchableOpacity style={styles.specBox} onPress={onPress}>
-    <Ionicons name={icon} size={20} color={THEME.primary} style={{marginBottom: 8}} />
-    <Text style={styles.specLabel}>{label}</Text>
-    <Text style={[styles.specValue, !value && {color: THEME.danger}]}>
-      {value || 'Unknown'}
-    </Text>
-  </TouchableOpacity>
-);
-
-const AlertCard = ({ color, icon, title, value, sub }: any) => (
-  <View style={[styles.alertCard, { borderTopColor: color }]}>
-    <Ionicons name={icon} size={24} color={color} style={{marginBottom: 8}} />
-    <Text style={styles.alertTitle}>{title}</Text>
-    <Text style={[styles.alertValue, { color }]}>{value}</Text>
-    <Text style={styles.alertSub}>{sub}</Text>
-  </View>
-);
-
-const InfoTile = ({ label, value, sub, tone, icon }: any) => (
-  <View style={[styles.infoTile, { borderColor: tone }]}>
-    <View style={styles.infoTileHeader}>
-      <Ionicons name={icon} size={18} color={tone} />
-      <Text style={styles.infoTileLabel}>{label}</Text>
+const SpecBox = ({ label, value, icon }: any) => {
+  const { theme } = useTheme();
+  const styles = useStyles();
+  return (
+    <View style={styles.specBox}>
+      <Ionicons name={icon} size={18} color={theme.primary} style={{marginBottom: 8}} />
+      <Text style={styles.specLabel}>{label}</Text>
+      <Text style={[styles.specValue, !value && {color: theme.danger}]}>
+        {value || 'Unknown'}
+      </Text>
     </View>
-    <Text style={styles.infoTileValue}>{value}</Text>
-    <Text style={styles.infoTileSub}>{sub}</Text>
-  </View>
-);
+  );
+};
 
-const LogRow = ({ log }: { log: ServiceLog }) => (
-  <View style={styles.logRow}>
-    <View style={styles.logTimelineLine} />
-    <View style={[styles.logIconParams, { borderColor: log.isSystemEvent ? THEME.textDim : THEME.primary }]}>
-       <Ionicons 
-         name={log.isSystemEvent ? "settings" : getTypeIconName(log.type)} 
-         size={14} 
-         color={log.isSystemEvent ? THEME.textDim : THEME.primary} 
+const AlertCard = ({ color, icon, title, value, sub }: any) => {
+  const styles = useStyles();
+  return (
+    <View style={[styles.alertCard, { borderTopColor: color }]}>
+      <Ionicons name={icon} size={24} color={color} style={{marginBottom: 8}} />
+      <Text style={styles.alertTitle}>{title}</Text>
+      <Text style={[styles.alertValue, { color }]}>{value}</Text>
+      <Text style={styles.alertSub}>{sub}</Text>
+    </View>
+  );
+};
+
+const InfoTile = ({ label, value, sub, tone, icon, onPress }: any) => {
+  const styles = useStyles();
+  return (
+    <TouchableOpacity style={styles.infoTile} onPress={onPress} activeOpacity={onPress ? 0.7 : 1}>
+      <View style={styles.infoTileHeader}>
+        <Ionicons name={icon} size={18} color={tone} />
+        <Text style={styles.infoTileLabel}>{label}</Text>
+      </View>
+      <Text style={styles.infoTileValue}>{value}</Text>
+      <Text style={styles.infoTileSub}>{sub}</Text>
+    </TouchableOpacity>
+  );
+};
+
+const LogRow = ({ log, units }: { log: ServiceLog; units: 'km' | 'mi' }) => {
+  const { theme } = useTheme();
+  const styles = useStyles();
+  return (
+    <View style={styles.logRow}>
+      <View style={styles.logTimelineLine} />
+      <View style={[styles.logIconParams, { borderColor: log.isSystemEvent ? theme.textDim : theme.primary }]}>
+        <Ionicons 
+          name={log.isSystemEvent ? "settings" : getTypeIconName(log.type)} 
+          size={14} 
+          color={log.isSystemEvent ? theme.textDim : theme.primary} 
         />
-    </View>
-    <View style={styles.logContent}>
-      <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
-        <Text style={styles.logTitle}>{log.title}</Text>
-        <Text style={styles.logDate}>{log.date}</Text>
       </View>
-      {!!log.notes && <Text style={styles.logNotes}>{log.notes}</Text>}
-      <View style={{flexDirection: 'row', justifyContent: 'space-between', marginTop: 4}}>
-        <Text style={styles.logMeta}>{log.mileage > 0 ? `${log.mileage} km` : ''}</Text>
-        {log.cost > 0 && <Text style={styles.logCost}>{log.cost} kr</Text>}
+      <View style={styles.logContent}>
+        <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
+          <Text style={styles.logTitle}>{log.title}</Text>
+          <Text style={styles.logDate}>{log.date}</Text>
+        </View>
+        {!!log.notes && <Text style={styles.logNotes}>{log.notes}</Text>}
+        <View style={{flexDirection: 'row', justifyContent: 'space-between', marginTop: 4}}>
+          <Text style={styles.logMeta}>{log.mileage > 0 ? formatDistance(log.mileage, units) : ''}</Text>
+          {log.cost > 0 && <Text style={styles.logCost}>{log.cost} kr</Text>}
+        </View>
       </View>
     </View>
-  </View>
-);
+  );
+};
 
-const TabBtn = ({ icon, label, active, onPress }: any) => (
-  <TouchableOpacity style={styles.tabBtn} onPress={onPress} accessibilityLabel={label}>
-    <Ionicons name={active ? icon : `${icon}-outline`} size={22} color={active ? THEME.primary : THEME.textDim} />
-    <Text style={[styles.tabLabel, { color: active ? THEME.primary : THEME.textDim }]}>{label}</Text>
-  </TouchableOpacity>
-);
+const TabBtn = ({ icon, label, active, onPress }: any) => {
+  const { theme } = useTheme();
+  const styles = useStyles();
+  return (
+    <TouchableOpacity style={styles.tabBtn} onPress={onPress} accessibilityLabel={label}>
+      <Ionicons name={active ? icon : `${icon}-outline`} size={22} color={active ? theme.primary : theme.textDim} />
+      <Text style={[styles.tabLabel, { color: active ? theme.primary : theme.textDim }]}>{label}</Text>
+    </TouchableOpacity>
+  );
+};
 
 const getTypeIconName = (type: string) => {
   const key = String(type || '').toLowerCase();
@@ -694,7 +843,9 @@ const getTypeIconName = (type: string) => {
 
 // --- MODALS ---
 
-const AddLogModal = ({ onClose, onSave, mileagePlaceholder, logTypes, logType, onManageTypes }: any) => {
+const AddLogModal = ({ onClose, onSave, mileagePlaceholder, logTypes, logType, onManageTypes, units }: any) => {
+  const { theme } = useTheme();
+  const styles = useStyles();
   const [title, setTitle] = useState('');
   const [cost, setCost] = useState('');
   const [mileage, setMileage] = useState('');
@@ -708,7 +859,7 @@ const AddLogModal = ({ onClose, onSave, mileagePlaceholder, logTypes, logType, o
   const availableTypes: LogType[] = logTypes?.length ? logTypes : ['service'];
 
   return (
-    <View style={[styles.modalBase, { backgroundColor: THEME.bg }]}>
+    <View style={[styles.modalBase, { backgroundColor: theme.bg }]}>
       <View style={styles.modalHeader}>
         <TouchableOpacity onPress={onClose}>
           <Text style={styles.modalCancelText}>Cancel</Text>
@@ -720,7 +871,7 @@ const AddLogModal = ({ onClose, onSave, mileagePlaceholder, logTypes, logType, o
                 id: Date.now().toString(),
                 title: title || typeLabel(logType),
                 cost: parseInt(cost) || 0,
-                mileage: parseInt(mileage) || 0,
+                mileage: toKilometers(parseInt(mileage) || 0, units),
                 date: logDate.toISOString().split('T')[0],
                 type: logType,
                 notes,
@@ -735,10 +886,21 @@ const AddLogModal = ({ onClose, onSave, mileagePlaceholder, logTypes, logType, o
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={styles.logForm}>
+      <ScrollView style={{ backgroundColor: theme.bg }} contentContainerStyle={styles.logForm}>
         <View style={styles.formSection}>
           <Text style={styles.sectionHeader}>Details</Text>
           <View style={styles.listGroup}>
+            <View style={styles.listRow}>
+              <Text style={styles.listLabel}>Title</Text>
+              <TextInput
+                style={styles.listInput}
+                placeholderTextColor={theme.textDim}
+                placeholder="Oil Change"
+                value={title}
+                onChangeText={setTitle}
+              />
+            </View>
+            <View style={styles.listDivider} />
             <TouchableOpacity
               style={styles.listRow}
               onPress={() => setShowDatePicker(!showDatePicker)}>
@@ -753,6 +915,7 @@ const AddLogModal = ({ onClose, onSave, mileagePlaceholder, logTypes, logType, o
                   value={logDate}
                   mode="date"
                   display={Platform.OS === 'ios' ? 'inline' : 'default'}
+                  themeVariant={theme.scheme === 'dark' ? 'dark' : 'light'}
                   onChange={(event, selectedDate) => {
                     if (Platform.OS !== 'ios') {
                       setShowDatePicker(false);
@@ -773,17 +936,6 @@ const AddLogModal = ({ onClose, onSave, mileagePlaceholder, logTypes, logType, o
                 </Text>
               </View>
             </TouchableOpacity>
-            <View style={styles.listDivider} />
-            <View style={styles.listRow}>
-              <Text style={styles.listLabel}>Title</Text>
-              <TextInput
-                style={styles.listInput}
-                placeholderTextColor={THEME.textDim}
-                placeholder="Oil Change"
-                value={title}
-                onChangeText={setTitle}
-              />
-            </View>
           </View>
         </View>
 
@@ -794,7 +946,7 @@ const AddLogModal = ({ onClose, onSave, mileagePlaceholder, logTypes, logType, o
               <Text style={styles.listLabel}>Cost</Text>
               <TextInput
                 style={styles.listInput}
-                placeholderTextColor={THEME.textDim}
+                placeholderTextColor={theme.textDim}
                 placeholder="0"
                 keyboardType="numeric"
                 value={cost}
@@ -806,7 +958,7 @@ const AddLogModal = ({ onClose, onSave, mileagePlaceholder, logTypes, logType, o
               <Text style={styles.listLabel}>Mileage</Text>
               <TextInput
                 style={styles.listInput}
-                placeholderTextColor={THEME.textDim}
+                placeholderTextColor={theme.textDim}
                 placeholder={mileagePlaceholder}
                 keyboardType="numeric"
                 value={mileage}
@@ -821,7 +973,7 @@ const AddLogModal = ({ onClose, onSave, mileagePlaceholder, logTypes, logType, o
           <View style={styles.listGroup}>
             <TextInput
               style={styles.notesInput}
-              placeholderTextColor={THEME.textDim}
+              placeholderTextColor={theme.textDim}
               placeholder="Details..."
               value={notes}
               onChangeText={setNotes}
@@ -834,7 +986,9 @@ const AddLogModal = ({ onClose, onSave, mileagePlaceholder, logTypes, logType, o
   );
 };
 
-const SimpleInputModal = ({ visible, title, placeholder, keyboard, onClose, onSave }: any) => {
+const SimpleInputModal = ({ visible, title, placeholder, keyboard, onClose, onSave, units }: any) => {
+  const { theme } = useTheme();
+  const styles = useStyles();
   const [val, setVal] = useState('');
   useEffect(() => setVal(''), [visible]);
   return (
@@ -845,15 +999,16 @@ const SimpleInputModal = ({ visible, title, placeholder, keyboard, onClose, onSa
           <TextInput 
             style={styles.input} 
             placeholder={placeholder} 
-            placeholderTextColor={THEME.textDim}
+            placeholderTextColor={theme.textDim}
             value={val} 
             onChangeText={setVal} 
             keyboardType={keyboard}
             autoFocus
           />
+          {units && <Text style={styles.popupHelp}>Unit: {units.toUpperCase()}</Text>}
           <View style={{flexDirection: 'row', gap: 10, marginTop: 20}}>
-            <TouchableOpacity onPress={onClose} style={[styles.popupBtn, {backgroundColor: THEME.surface, borderWidth: 1, borderColor: THEME.cardBorder}]}><Text style={{color: THEME.text}}>Cancel</Text></TouchableOpacity>
-            <TouchableOpacity onPress={() => onSave(val)} style={[styles.popupBtn, {backgroundColor: THEME.primary}]}><Text style={{fontWeight: '600', color: 'white'}}>Save</Text></TouchableOpacity>
+            <TouchableOpacity onPress={onClose} style={[styles.popupBtn, {backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.cardBorder}]}><Text style={{color: theme.text}}>Cancel</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => onSave(val)} style={[styles.popupBtn, {backgroundColor: theme.primary}]}><Text style={{fontWeight: '600', color: 'white'}}>Save</Text></TouchableOpacity>
           </View>
         </View>
       </View>
@@ -862,6 +1017,8 @@ const SimpleInputModal = ({ visible, title, placeholder, keyboard, onClose, onSa
 };
 
 const TypesPage = ({ types, selectedType, onSelectType, onAddType, onRemoveType, onClose }: any) => {
+  const { theme } = useTheme();
+  const styles = useStyles();
   const promptAddType = () => {
     if (Platform.OS === 'ios') {
       Alert.prompt('New Type', 'Name your type', [
@@ -884,7 +1041,7 @@ const TypesPage = ({ types, selectedType, onSelectType, onAddType, onRemoveType,
   };
 
   return (
-    <View style={[styles.modalBase, { backgroundColor: THEME.bg }]}>
+    <View style={[styles.modalBase, { backgroundColor: theme.bg }]}>
       <View style={styles.modalHeader}>
         <TouchableOpacity onPress={onClose}>
           <Text style={styles.modalCancelText}>Done</Text>
@@ -894,7 +1051,7 @@ const TypesPage = ({ types, selectedType, onSelectType, onAddType, onRemoveType,
           <Ionicons name="add" size={20} color="white" />
         </TouchableOpacity>
       </View>
-      <ScrollView contentContainerStyle={styles.logForm}>
+      <ScrollView style={{ backgroundColor: theme.bg }} contentContainerStyle={styles.logForm}>
         <View style={styles.formSection}>
           <Text style={styles.sectionHeader}>Your Types</Text>
           <View style={styles.listGroup}>
@@ -909,11 +1066,11 @@ const TypesPage = ({ types, selectedType, onSelectType, onAddType, onRemoveType,
                   <View style={styles.listRow}>
                     <TouchableOpacity style={styles.typeSelectBtn} onPress={() => onSelectType(type)}>
                       <View style={styles.typeNameRow}>
-                        <Ionicons name={getTypeIconName(type)} size={16} color={THEME.textDim} />
+                        <Ionicons name={getTypeIconName(type)} size={16} color={theme.textDim} />
                         <Text style={styles.typeName}>{String(type).charAt(0).toUpperCase() + String(type).slice(1)}</Text>
                       </View>
                       {selectedType === type && (
-                        <Ionicons name="checkmark" size={18} color={THEME.primary} />
+                        <Ionicons name="checkmark" size={18} color={theme.primary} />
                       )}
                     </TouchableOpacity>
                   </View>
@@ -929,18 +1086,20 @@ const TypesPage = ({ types, selectedType, onSelectType, onAddType, onRemoveType,
 };
 
 const Onboarding = ({ onRegister }: any) => {
+  const { theme, statusBarStyle } = useTheme();
+  const styles = useStyles();
   const [plate, setPlate] = useState('');
   const [load, setLoad] = useState(false);
   return (
     <SafeAreaView style={[styles.container, {justifyContent: 'center', alignItems: 'center'}]}>
-      <StatusBar style="dark" />
-      <Ionicons name="car-sport" size={80} color={THEME.primary} style={{marginBottom: 20}} />
-      <Text style={{fontSize: 32, fontWeight: '700', color: THEME.text}}>Glovebox</Text>
-      <Text style={{color: THEME.textDim, marginBottom: 40}}>Ready in seconds.</Text>
+      <StatusBar style={statusBarStyle} />
+      <Ionicons name="car-sport" size={80} color={theme.primary} style={{marginBottom: 20}} />
+      <Text style={{fontSize: 32, fontWeight: '700', color: theme.text}}>Glovebox</Text>
+      <Text style={{color: theme.textDim, marginBottom: 40}}>Ready in seconds.</Text>
       <TextInput 
         style={[styles.input, {width: '80%', textAlign: 'center', fontSize: 24}]} 
         placeholder="LICENSE PLATE" 
-        placeholderTextColor={THEME.textDim}
+        placeholderTextColor={theme.textDim}
         value={plate}
         onChangeText={setPlate}
         autoCapitalize="characters"
@@ -955,129 +1114,136 @@ const Onboarding = ({ onRegister }: any) => {
   );
 };
 
-// --- STYLES (iOS Light System) ---
+// --- STYLES ---
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: THEME.bg },
-  screenContainer: { flex: 1, padding: 20, backgroundColor: THEME.bg },
+const createStyles = (theme: typeof LIGHT_THEME) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: theme.bg },
+  screenContainer: { flex: 1, padding: 20, backgroundColor: theme.bg },
   
   // Hero
-  heroContainer: { backgroundColor: THEME.card, margin: 20, padding: 20, borderRadius: 20, borderWidth: 1, borderColor: THEME.cardBorder, shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 10, shadowOffset: { width: 0, height: 6 }, elevation: 2 },
-  headerBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 8 },
-  headerTitle: { color: THEME.text, fontSize: 28, fontWeight: '700' },
-  headerSub: { color: THEME.textDim, fontSize: 12, marginTop: 2 },
-  headerPill: { backgroundColor: THEME.primary, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, flexDirection: 'row', alignItems: 'center', gap: 6 },
+  heroContainer: { backgroundColor: theme.card, margin: 16, padding: 16, borderRadius: 14, borderWidth: 1, borderColor: theme.cardBorder, shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 12, shadowOffset: { width: 0, height: 8 }, elevation: 2 },
+  heroLogo: { fontSize: 16, color: theme.primary, fontWeight: '600', letterSpacing: 0.6, textTransform: 'uppercase' },
+  brandLogoWrap: { width: 42, height: 42, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
+  headerBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 },
+  headerTitle: { color: theme.text, fontSize: 28, fontWeight: '700' },
+  headerPill: { backgroundColor: theme.primary, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, flexDirection: 'row', alignItems: 'center', gap: 6 },
   headerPillText: { color: 'white', fontWeight: '600', fontSize: 12 },
-  heroHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  heroBrand: { color: THEME.primary, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase', fontSize: 12 },
-  plateTag: { backgroundColor: THEME.surface, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: THEME.cardBorder },
-  plateText: { color: THEME.text, fontWeight: '600', fontSize: 14 },
-  heroModel: { fontSize: 26, fontWeight: '700', color: THEME.text, marginTop: 6 },
-  heroVin: { color: THEME.textDim, fontSize: 12, marginTop: 4, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
+  heroTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  heroBottomRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 10 },
+  heroBrand: { color: theme.primary, fontWeight: '600', letterSpacing: 0.6, textTransform: 'uppercase', fontSize: 16 },
+  heroModel: { fontSize: 24, fontWeight: '700', color: theme.text, marginTop: -2 },
+  heroLinePlate: { color: theme.textDim, fontWeight: '600', fontSize: 15, letterSpacing: 0.4 },
+  heroStatus: { color: theme.textDim, fontSize: 12, marginTop: 6 },
+  heroChangeText: { color: theme.primary, fontWeight: '600', fontSize: 13 },
   heroMetaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8 },
-  heroMeta: { color: THEME.textDim, fontSize: 12, fontWeight: '600' },
-  heroMetaDot: { color: THEME.textDim, paddingHorizontal: 6 },
-  mileageBtn: { marginTop: 16, flexDirection: 'row', alignItems: 'center', backgroundColor: THEME.surface, alignSelf: 'flex-start', padding: 8, paddingHorizontal: 12, borderRadius: 20, borderWidth: 1, borderColor: THEME.cardBorder },
-  mileageText: { color: THEME.text, fontWeight: '600', marginLeft: 8 },
+  heroMeta: { color: theme.textDim, fontSize: 12, fontWeight: '600' },
+  heroMetaDot: { color: theme.textDim, paddingHorizontal: 6 },
+  mileageRow: { marginTop: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: theme.surface, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 12, borderWidth: 1, borderColor: theme.cardBorder },
+  mileageLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  mileageText: { color: theme.text, fontWeight: '600', fontSize: 14 },
 
   // Sections
   section: { marginBottom: 24, paddingHorizontal: 20 },
-  sectionTitle: { color: THEME.textDim, fontSize: 12, fontWeight: '700', marginBottom: 12, letterSpacing: 0.4 },
+  sectionTitle: { color: theme.textDim, fontSize: 12, fontWeight: '700', marginBottom: 12, letterSpacing: 0.4 },
   
   // Grid
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
-  specBox: { width: '31%', backgroundColor: THEME.card, padding: 12, borderRadius: 16, borderWidth: 1, borderColor: THEME.cardBorder, minHeight: 90 },
-  specLabel: { color: THEME.textDim, fontSize: 11, marginTop: 'auto' },
-  specValue: { color: THEME.text, fontWeight: '600', fontSize: 13, marginTop: 2 },
+  specBox: { width: '31%', backgroundColor: theme.card, padding: 12, borderRadius: 16, borderWidth: 1, borderColor: theme.cardBorder, minHeight: 90 },
+  specLabel: { color: theme.textDim, fontSize: 11, marginTop: 'auto' },
+  specValue: { color: theme.text, fontWeight: '600', fontSize: 13, marginTop: 2 },
 
   // Tiles
   tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
-  infoTile: { width: '48%', backgroundColor: THEME.card, padding: 14, borderRadius: 18, borderWidth: 1 },
+  infoTile: { width: '48%', backgroundColor: theme.card, padding: 14, borderRadius: 18, borderWidth: 1, borderColor: theme.cardBorder },
   infoTileHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10 },
-  infoTileLabel: { color: THEME.textDim, fontSize: 11, fontWeight: '700' },
-  infoTileValue: { color: THEME.text, fontSize: 18, fontWeight: '700' },
-  infoTileSub: { color: THEME.textDim, fontSize: 10, marginTop: 4 },
+  infoTileLabel: { color: theme.textDim, fontSize: 11, fontWeight: '700' },
+  infoTileValue: { color: theme.text, fontSize: 18, fontWeight: '700' },
+  infoTileSub: { color: theme.textDim, fontSize: 10, marginTop: 4 },
 
   // Alerts
-  alertCard: { width: 140, backgroundColor: THEME.card, marginRight: 12, padding: 16, borderRadius: 16, borderTopWidth: 4 },
-  alertTitle: { color: THEME.text, fontWeight: '600', fontSize: 14 },
+  alertCard: { width: 140, backgroundColor: theme.card, marginRight: 12, padding: 16, borderRadius: 16, borderTopWidth: 4 },
+  alertTitle: { color: theme.text, fontWeight: '600', fontSize: 14 },
   alertValue: { fontSize: 18, fontWeight: '700', marginVertical: 4 },
-  alertSub: { color: THEME.textDim, fontSize: 10 },
+  alertSub: { color: theme.textDim, fontSize: 10 },
 
   // Logs
   logRow: { flexDirection: 'row', marginBottom: 20 },
-  logTimelineLine: { width: 2, backgroundColor: THEME.cardBorder, position: 'absolute', left: 15, top: 0, bottom: -20 },
-  logIconParams: { width: 32, height: 32, borderRadius: 16, backgroundColor: THEME.bg, borderWidth: 2, alignItems: 'center', justifyContent: 'center', zIndex: 2 },
-  logContent: { flex: 1, marginLeft: 12, backgroundColor: THEME.card, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: THEME.cardBorder },
-  logTitle: { color: THEME.text, fontWeight: '600' },
-  logDate: { color: THEME.textDim, fontSize: 10 },
-  logNotes: { color: THEME.textDim, fontSize: 12, marginVertical: 4 },
-  logMeta: { color: THEME.primary, fontSize: 10, fontWeight: '600' },
-  logCost: { color: THEME.danger, fontSize: 12, fontWeight: '600' },
+  logTimelineLine: { width: 2, backgroundColor: theme.cardBorder, position: 'absolute', left: 15, top: 0, bottom: -20 },
+  logIconParams: { width: 32, height: 32, borderRadius: 16, backgroundColor: theme.bg, borderWidth: 2, alignItems: 'center', justifyContent: 'center', zIndex: 2 },
+  logContent: { flex: 1, marginLeft: 12, backgroundColor: theme.card, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: theme.cardBorder },
+  logTitle: { color: theme.text, fontWeight: '600' },
+  logDate: { color: theme.textDim, fontSize: 10 },
+  logNotes: { color: theme.textDim, fontSize: 12, marginVertical: 4 },
+  logMeta: { color: theme.primary, fontSize: 10, fontWeight: '600' },
+  logCost: { color: theme.danger, fontSize: 12, fontWeight: '600' },
 
   // Tab Bar
   tabBarContainer: { position: 'absolute', left: 0, right: 0, bottom: 0 },
-  tabBar: { flex: 1, backgroundColor: 'rgba(255,255,255,0.35)', borderTopWidth: 1, borderColor: 'rgba(229,229,234,0.8)' },
+  tabBar: { flex: 1, backgroundColor: theme.tabBarBg, borderTopWidth: 1, borderColor: theme.tabBarBorder },
   tabBarContent: { height: 49, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-evenly', paddingHorizontal: 12, paddingTop: 6 },
   tabBtn: { flex: 1, alignItems: 'center', justifyContent: 'center', height: '100%' },
   tabLabel: { fontSize: 10, fontWeight: '500', marginTop: 2 },
 
   // Forms
-  input: { backgroundColor: THEME.card, color: THEME.text, padding: 16, borderRadius: 12, marginBottom: 16, borderWidth: 1, borderColor: THEME.cardBorder },
-  inpLabel: { color: THEME.textDim, fontSize: 11, fontWeight: '600', marginBottom: 8 },
-  mainBtn: { backgroundColor: THEME.primary, padding: 16, borderRadius: 14, alignItems: 'center' },
+  input: { backgroundColor: theme.card, color: theme.text, padding: 16, borderRadius: 12, marginBottom: 16, borderWidth: 1, borderColor: theme.cardBorder },
+  inpLabel: { color: theme.textDim, fontSize: 11, fontWeight: '600', marginBottom: 8 },
+  mainBtn: { backgroundColor: theme.primary, padding: 16, borderRadius: 14, alignItems: 'center' },
   btnTxt: { fontWeight: '600', color: 'white' },
   
   // Vault
-  docRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: THEME.card, padding: 16, borderRadius: 16, marginBottom: 12, borderWidth: 1, borderColor: THEME.cardBorder },
+  docRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: theme.card, padding: 16, borderRadius: 16, marginBottom: 12, borderWidth: 1, borderColor: theme.cardBorder },
   docIcon: { width: 40, height: 40, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginRight: 16 },
-  docTitle: { color: THEME.text, fontWeight: '600', fontSize: 16 },
-  docSub: { color: THEME.textDim, fontSize: 12 },
-  dashedBtn: { borderWidth: 1, borderColor: THEME.cardBorder, borderStyle: 'dashed', borderRadius: 16, padding: 16, alignItems: 'center', marginTop: 10 },
+  docTitle: { color: theme.text, fontWeight: '600', fontSize: 16 },
+  docSub: { color: theme.textDim, fontSize: 12 },
+  dashedBtn: { borderWidth: 1, borderColor: theme.cardBorder, borderStyle: 'dashed', borderRadius: 16, padding: 16, alignItems: 'center', marginTop: 10 },
 
   // Config
-  pageTitle: { fontSize: 28, fontWeight: '700', color: THEME.text, marginBottom: 4 },
-  pageSub: { color: THEME.textDim, marginBottom: 0 },
+  pageTitle: { fontSize: 28, fontWeight: '700', color: theme.text, marginBottom: 4 },
+  pageSub: { color: theme.textDim, marginBottom: 0 },
   pageHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 },
-  headerIconBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: THEME.primary, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 6, shadowOffset: { width: 0, height: 3 }, elevation: 3 },
-  configSection: { backgroundColor: THEME.card, borderRadius: 16, padding: 16, marginBottom: 20, borderWidth: 1, borderColor: THEME.cardBorder },
-  configHeader: { color: THEME.textDim, fontSize: 11, fontWeight: '600', marginBottom: 12 },
-  configRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: THEME.cardBorder },
-  configLabel: { color: THEME.text },
-  configValue: { color: THEME.textDim },
-  dangerBtn: { backgroundColor: THEME.danger, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 14, borderRadius: 14 },
+  headerIconBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: theme.primary, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 6, shadowOffset: { width: 0, height: 3 }, elevation: 3 },
+  settingsHeader: { color: theme.textDim, fontSize: 12, fontWeight: '600', marginTop: 16, marginBottom: 8, paddingHorizontal: 2, textTransform: 'uppercase', letterSpacing: 0.4 },
+  settingsGroup: { backgroundColor: theme.card, borderRadius: 12, borderWidth: 1, borderColor: theme.cardBorder, overflow: 'hidden', marginBottom: 12 },
+  settingsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14 },
+  settingsDivider: { height: 1, backgroundColor: theme.cardBorder },
+  settingsLabel: { color: theme.text, fontSize: 16 },
+  settingsValue: { color: theme.textDim, fontSize: 16 },
+  settingsDestructive: { color: theme.danger, fontSize: 16, fontWeight: '600' },
+  settingsChoiceRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14 },
+  settingsChoiceLabel: { color: theme.text, fontSize: 16 },
 
   // Modals
   modalBase: { flex: 1, paddingTop: 60 },
   modalHeader: { paddingHorizontal: 20, paddingBottom: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  modalH1: { fontSize: 20, fontWeight: '700', color: THEME.text },
-  modalSaveText: { color: THEME.primary, fontWeight: '600', fontSize: 16 },
-  modalCancelText: { color: THEME.primary, fontWeight: '600', fontSize: 16 },
+  modalH1: { fontSize: 20, fontWeight: '700', color: theme.text },
+  modalSaveText: { color: theme.primary, fontWeight: '600', fontSize: 16 },
+  modalCancelText: { color: theme.primary, fontWeight: '600', fontSize: 16 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'center', padding: 40 },
-  modalPopup: { backgroundColor: THEME.card, padding: 24, borderRadius: 20, borderWidth: 1, borderColor: THEME.cardBorder },
-  popupTitle: { color: THEME.text, fontSize: 18, fontWeight: '600', marginBottom: 16 },
+  modalPopup: { backgroundColor: theme.card, padding: 24, borderRadius: 20, borderWidth: 1, borderColor: theme.cardBorder },
+  popupTitle: { color: theme.text, fontSize: 18, fontWeight: '600', marginBottom: 16 },
+  popupHelp: { color: theme.textDim, fontSize: 12, marginTop: 6 },
   popupBtn: { flex: 1, padding: 12, borderRadius: 12, alignItems: 'center' },
-  addLogOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: THEME.bg, zIndex: 20 },
+  addLogOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: theme.bg, zIndex: 20 },
   logForm: { padding: 20, paddingBottom: 40 },
   formSection: { marginBottom: 18 },
-  sectionHeader: { color: THEME.textDim, fontSize: 12, fontWeight: '600', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.4 },
-  listGroup: { backgroundColor: THEME.card, borderRadius: 12, borderWidth: 1, borderColor: THEME.cardBorder, overflow: 'hidden' },
+  sectionHeader: { color: theme.textDim, fontSize: 12, fontWeight: '600', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.4 },
+  listGroup: { backgroundColor: theme.card, borderRadius: 12, borderWidth: 1, borderColor: theme.cardBorder, overflow: 'hidden' },
   listRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 16 },
-  listLabel: { color: THEME.text, fontSize: 15, fontWeight: '500', width: 80 },
-  listValue: { color: THEME.text, fontSize: 16, textAlign: 'right' },
+  listLabel: { color: theme.text, fontSize: 15, fontWeight: '500', width: 80 },
+  listValue: { color: theme.text, fontSize: 16, textAlign: 'right' },
   listValueRow: { flex: 1, flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: 6 },
-  listInput: { flex: 1, textAlign: 'right', color: THEME.text, fontSize: 16 },
+  listInput: { flex: 1, textAlign: 'right', color: theme.text, fontSize: 16 },
   typeRow: { flex: 1, flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 },
-  typePill: { paddingVertical: 6, paddingHorizontal: 10, borderRadius: 999, borderWidth: 1, borderColor: THEME.cardBorder, backgroundColor: THEME.surface },
-  typePillActive: { backgroundColor: THEME.primary, borderColor: THEME.primary },
-  typePillText: { color: THEME.textDim, fontSize: 12, fontWeight: '600' },
+  typePill: { paddingVertical: 6, paddingHorizontal: 10, borderRadius: 999, borderWidth: 1, borderColor: theme.cardBorder, backgroundColor: theme.surface },
+  typePillActive: { backgroundColor: theme.primary, borderColor: theme.primary },
+  typePillText: { color: theme.textDim, fontSize: 12, fontWeight: '600' },
   typePillTextActive: { color: 'white' },
   typeSelectBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingRight: 12 },
   typeNameRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 },
-  typeName: { color: THEME.text, fontSize: 15, fontWeight: '500' },
-  swipeDelete: { width: 64, backgroundColor: THEME.danger, alignItems: 'center', justifyContent: 'center' },
-  listDivider: { height: 1, backgroundColor: THEME.cardBorder },
-  notesInput: { minHeight: 120, paddingHorizontal: 14, paddingVertical: 12, color: THEME.text, fontSize: 15, textAlignVertical: 'top' },
-  datePickerRow: { paddingHorizontal: 12, paddingBottom: 8, backgroundColor: THEME.card },
-  formFooter: { position: 'absolute', left: 0, right: 0, bottom: 0, padding: 16, backgroundColor: THEME.bg, borderTopWidth: 1, borderTopColor: THEME.cardBorder, flexDirection: 'row', gap: 12 }
+  typeName: { color: theme.text, fontSize: 15, fontWeight: '500' },
+  swipeDelete: { width: 64, backgroundColor: theme.danger, alignItems: 'center', justifyContent: 'center' },
+  listDivider: { height: 1, backgroundColor: theme.cardBorder },
+  notesInput: { minHeight: 120, paddingHorizontal: 14, paddingVertical: 12, color: theme.text, fontSize: 15, textAlignVertical: 'top' },
+  datePickerRow: { paddingHorizontal: 12, paddingBottom: 8, backgroundColor: theme.card },
+  formFooter: { position: 'absolute', left: 0, right: 0, bottom: 0, padding: 16, backgroundColor: theme.bg, borderTopWidth: 1, borderTopColor: theme.cardBorder, flexDirection: 'row', gap: 12 }
 });
