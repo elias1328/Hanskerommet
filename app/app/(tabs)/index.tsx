@@ -28,6 +28,7 @@ import PagerView from 'react-native-pager-view';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Swipeable } from 'react-native-gesture-handler';
 import { getBrandLogo } from '../../brand-logos';
+import * as SQLite from 'expo-sqlite';
 
 // Enable LayoutAnimation for Android
 if (Platform.OS === 'android') {
@@ -62,6 +63,7 @@ interface Doc {
 }
 
 interface Car {
+  id: number;
   plate: string;
   make: string;
   model: string;
@@ -77,6 +79,11 @@ interface Car {
   fuelType: string | null;
 }
 
+const DEFAULT_DOCS: Doc[] = [
+  { id: '1', title: 'Insurance Policy', expiry: '2025-01-01', type: 'insurance' },
+  { id: '2', title: 'Vognkort (Del 2)', expiry: 'Never', type: 'vognkort' }
+];
+
 const formatDistance = (km: number, units: 'km' | 'mi') => {
   if (units === 'mi') {
     const miles = km * 0.621371;
@@ -87,6 +94,8 @@ const formatDistance = (km: number, units: 'km' | 'mi') => {
 
 const toKilometers = (value: number, units: 'km' | 'mi') =>
   units === 'mi' ? Math.round(value / 0.621371) : Math.round(value);
+
+const openDbAsync = () => SQLite.openDatabaseAsync('glovebox.db');
 
 // --- 2. THEMES ---
 
@@ -141,6 +150,7 @@ const useStyles = () => {
 // --- 3. API SERVICE ---
 
 const getMockCar = (plate: string): Car => ({
+  id: Date.now(),
   plate: plate.toUpperCase(),
   make: 'Volkswagen',
   model: 'Golf GTI',
@@ -195,6 +205,7 @@ const fetchCarDetails = async (plate: string): Promise<Car> => {
     null;
 
   return {
+    id: Date.now(),
     plate: raw.kjennemerke?.[0]?.kjennemerke || plate,
     make: gen?.merke?.[0]?.merke || 'Unknown',
     model: gen?.handelsbetegnelse?.[0] || 'Unknown',
@@ -219,12 +230,19 @@ const fetchCarDetails = async (plate: string): Promise<Car> => {
 export default function App() {
   const insets = useSafeAreaInsets();
   const pagerRef = useRef<PagerView>(null);
+  const dbRef = useRef<any>(null);
+  const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
   const tabKeys = ['garage', 'logs', 'vault', 'config'] as const;
   const screenWidth = Dimensions.get('window').width;
+  const appX = useRef(new Animated.Value(screenWidth)).current;
+  const onboardingX = useRef(new Animated.Value(0)).current;
+  const prevViewRef = useRef<'onboarding' | 'garage' | 'vault' | 'logs' | 'config'>('onboarding');
   const addLogX = useRef(new Animated.Value(screenWidth)).current;
   const typesX = useRef(new Animated.Value(screenWidth)).current;
   const [view, setView] = useState<'onboarding' | 'garage' | 'vault' | 'logs' | 'config'>('onboarding');
+  const [cars, setCars] = useState<Car[]>([]);
   const [car, setCar] = useState<Car | null>(null);
+  const [activeCarId, setActiveCarId] = useState<number | null>(null);
   const [logs, setLogs] = useState<ServiceLog[]>([]);
   const [selectedLogType, setSelectedLogType] = useState<LogType>('service');
   const [logTypes, setLogTypes] = useState<LogType[]>([
@@ -234,12 +252,20 @@ export default function App() {
     'upgrade',
     'fuel',
   ]);
-  const [docs, setDocs] = useState<Doc[]>([
-    { id: '1', title: 'Insurance Policy', expiry: '2025-01-01', type: 'insurance' },
-    { id: '2', title: 'Vognkort (Del 2)', expiry: 'Never', type: 'vognkort' }
-  ]);
+  const [docs, setDocs] = useState<Doc[]>(DEFAULT_DOCS);
   const [units, setUnits] = useState<'km' | 'mi'>('km');
   const [appTheme, setAppTheme] = useState<'system' | 'light' | 'dark'>('system');
+  const [dbReady, setDbReady] = useState(false);
+  const [isHydrating, setIsHydrating] = useState(false);
+
+  const enqueueWrite = (task: () => Promise<void>) => {
+    writeQueueRef.current = writeQueueRef.current
+      .then(task)
+      .catch((error: any) => {
+        console.warn('Failed to write to local DB', error);
+      });
+    return writeQueueRef.current;
+  };
   const colorScheme = useColorScheme();
 
   const resolvedTheme = appTheme === 'system' ? (colorScheme ?? 'light') : appTheme;
@@ -249,11 +275,204 @@ export default function App() {
   );
   const styles = useMemo(() => createStyles(theme), [theme]);
   const statusBarStyle: 'light' | 'dark' = resolvedTheme === 'dark' ? 'light' : 'dark';
-  
+
   // Modals
   const [modals, setModals] = useState({ addLog: false, mileage: false, types: false });
 
   // --- ACTIONS ---
+  useEffect(() => {
+    const prevView = prevViewRef.current;
+    prevViewRef.current = view;
+    if (view === 'onboarding') {
+      if (prevView !== 'onboarding') {
+        onboardingX.setValue(-screenWidth);
+        Animated.parallel([
+          Animated.timing(appX, {
+            toValue: screenWidth,
+            duration: 260,
+            useNativeDriver: true,
+          }),
+          Animated.timing(onboardingX, {
+            toValue: 0,
+            duration: 260,
+            useNativeDriver: true,
+          })
+        ]).start();
+      } else {
+        appX.setValue(screenWidth);
+        onboardingX.setValue(0);
+      }
+      return;
+    }
+    if (prevView === 'onboarding') {
+      appX.setValue(screenWidth);
+      onboardingX.setValue(0);
+      Animated.parallel([
+        Animated.timing(appX, {
+          toValue: 0,
+          duration: 280,
+          useNativeDriver: true,
+        }),
+        Animated.timing(onboardingX, {
+          toValue: -screenWidth,
+          duration: 280,
+          useNativeDriver: true,
+        })
+      ]).start();
+    } else {
+      appX.setValue(0);
+      onboardingX.setValue(-screenWidth);
+    }
+  }, [appX, onboardingX, screenWidth, view]);
+  useEffect(() => {
+    const initDb = async () => {
+      try {
+        const db = await openDbAsync();
+        dbRef.current = db;
+
+        await db.execAsync(`CREATE TABLE IF NOT EXISTS car (
+            id INTEGER PRIMARY KEY NOT NULL,
+            plate TEXT,
+            make TEXT,
+            model TEXT,
+            year INTEGER,
+            vin TEXT,
+            nextEU TEXT,
+            mileage INTEGER,
+            topSpeed TEXT,
+            engineLiters TEXT,
+            totalWeight TEXT,
+            seats TEXT,
+            fuelType TEXT
+          );
+          CREATE TABLE IF NOT EXISTS logs (
+            id TEXT PRIMARY KEY NOT NULL,
+            title TEXT,
+            date TEXT,
+            mileage INTEGER,
+            cost INTEGER,
+            type TEXT,
+            notes TEXT,
+            isSystemEvent INTEGER,
+            carId INTEGER
+          );
+          CREATE TABLE IF NOT EXISTS types (
+            name TEXT PRIMARY KEY NOT NULL
+          );
+          CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY NOT NULL,
+            value TEXT
+          );
+          CREATE TABLE IF NOT EXISTS docs (
+            id TEXT PRIMARY KEY NOT NULL,
+            title TEXT,
+            expiry TEXT,
+            type TEXT,
+            carId INTEGER
+          );`);
+
+        const logColumns = await db.getAllAsync<any>('PRAGMA table_info(logs)');
+        if (!logColumns.some((col: any) => col.name === 'carId')) {
+          await db.execAsync('ALTER TABLE logs ADD COLUMN carId INTEGER');
+        }
+        const docColumns = await db.getAllAsync<any>('PRAGMA table_info(docs)');
+        if (!docColumns.some((col: any) => col.name === 'carId')) {
+          await db.execAsync('ALTER TABLE docs ADD COLUMN carId INTEGER');
+        }
+
+        const carRows = await db.getAllAsync<any>('SELECT * FROM car ORDER BY id DESC');
+        if (carRows.length) {
+          const fallbackCarId = Number(carRows[0].id);
+          await db.runAsync('UPDATE logs SET carId = ? WHERE carId IS NULL', [fallbackCarId]);
+          await db.runAsync('UPDATE docs SET carId = ? WHERE carId IS NULL', [fallbackCarId]);
+        }
+        if (carRows.length) {
+          const mappedCars = carRows.map((row: any) => ({
+            id: Number(row.id),
+            plate: row.plate,
+            make: row.make,
+            model: row.model,
+            year: Number(row.year) || 0,
+            vin: row.vin,
+            nextEU: row.nextEU,
+            mileage: Number(row.mileage) || 0,
+            topSpeed: row.topSpeed,
+            engineLiters: row.engineLiters,
+            totalWeight: row.totalWeight,
+            seats: row.seats,
+            fuelType: row.fuelType
+          }));
+          setCars(mappedCars);
+        }
+
+        const typeRows = await db.getAllAsync<any>('SELECT name FROM types');
+        if (typeRows.length) {
+          const names = typeRows.map((row: any) => row.name);
+          setLogTypes(names);
+          setSelectedLogType(names[0] || 'service');
+        } else {
+          const defaults = ['service', 'repair', 'inspection', 'upgrade', 'fuel'];
+          setLogTypes(defaults);
+          setSelectedLogType('service');
+          await db.withExclusiveTransactionAsync(async (tx) => {
+            for (const name of defaults) {
+              await tx.runAsync('INSERT OR IGNORE INTO types (name) VALUES (?)', [name]);
+            }
+          });
+        }
+
+        const settingsRows = await db.getAllAsync<any>('SELECT key, value FROM settings');
+        let storedActiveCarId: number | null = null;
+        settingsRows.forEach((row: any) => {
+          if (row.key === 'units' && (row.value === 'km' || row.value === 'mi')) {
+            setUnits(row.value);
+          }
+          if (row.key === 'appTheme' && ['system', 'light', 'dark'].includes(row.value)) {
+            setAppTheme(row.value);
+          }
+          if (row.key === 'activeCarId' && row.value) {
+            const parsed = Number(row.value);
+            if (!Number.isNaN(parsed)) {
+              storedActiveCarId = parsed;
+            }
+          }
+        });
+
+        const activeId = storedActiveCarId ?? (carRows.length ? Number(carRows[0].id) : null);
+        if (activeId) {
+          setIsHydrating(true);
+          setActiveCarId(activeId);
+          const activeCar = carRows.find((row: any) => Number(row.id) === activeId);
+          if (activeCar) {
+            setCar({
+              id: Number(activeCar.id),
+              plate: activeCar.plate,
+              make: activeCar.make,
+              model: activeCar.model,
+              year: Number(activeCar.year) || 0,
+              vin: activeCar.vin,
+              nextEU: activeCar.nextEU,
+              mileage: Number(activeCar.mileage) || 0,
+              topSpeed: activeCar.topSpeed,
+              engineLiters: activeCar.engineLiters,
+              totalWeight: activeCar.totalWeight,
+              seats: activeCar.seats,
+              fuelType: activeCar.fuelType
+            });
+            setView('garage');
+            pagerRef.current?.setPage(0);
+          }
+        }
+
+        setDbReady(true);
+      } catch (error) {
+        console.warn('Failed to init local DB', error);
+      }
+    };
+
+    initDb();
+  }, []);
+
   useEffect(() => {
     if (!modals.addLog) return;
     addLogX.setValue(screenWidth);
@@ -273,6 +492,168 @@ export default function App() {
       useNativeDriver: true,
     }).start();
   }, [modals.types, screenWidth, typesX]);
+
+  const loadCarData = async (carId: number) => {
+    if (!dbRef.current) return;
+    const db = dbRef.current;
+    setIsHydrating(true);
+
+    try {
+      const logRows = await db.getAllAsync<any>(
+        'SELECT * FROM logs WHERE carId = ? ORDER BY date DESC, id DESC',
+        [carId]
+      );
+      setLogs(
+        logRows.map((row: any) => ({
+          id: row.id,
+          title: row.title,
+          date: row.date,
+          mileage: Number(row.mileage) || 0,
+          cost: Number(row.cost) || 0,
+          type: row.type,
+          notes: row.notes || '',
+          isSystemEvent: Number(row.isSystemEvent) === 1
+        }))
+      );
+
+      const docsRows = await db.getAllAsync<any>('SELECT * FROM docs WHERE carId = ?', [carId]);
+      if (docsRows.length) {
+        setDocs(
+          docsRows.map((row: any) => ({
+            id: row.id,
+            title: row.title,
+            expiry: row.expiry,
+            type: row.type
+          }))
+        );
+      } else {
+        const seededDocs = DEFAULT_DOCS.map((doc) => ({
+          ...doc,
+          id: `${carId}-${doc.id}`
+        }));
+        setDocs(seededDocs);
+        enqueueWrite(async () => {
+          await db.withExclusiveTransactionAsync(async (tx: any) => {
+            for (const doc of seededDocs) {
+              await tx.runAsync(
+                'INSERT OR IGNORE INTO docs (id, title, expiry, type, carId) VALUES (?, ?, ?, ?, ?)',
+                [doc.id, doc.title, doc.expiry, doc.type, carId]
+              );
+            }
+          });
+        });
+      }
+    } finally {
+      setIsHydrating(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!dbReady || !activeCarId) return;
+    loadCarData(activeCarId);
+  }, [activeCarId, dbReady]);
+
+  useEffect(() => {
+    if (!activeCarId || !cars.length) return;
+    const next = cars.find((item) => item.id === activeCarId) || null;
+    if (next && (!car || car.id !== next.id)) {
+      setCar(next);
+    }
+  }, [activeCarId, cars, car]);
+
+  useEffect(() => {
+    if (!dbReady || !dbRef.current || !car || isHydrating) return;
+    const db = dbRef.current;
+    enqueueWrite(async () => {
+      await db.runAsync(
+        `UPDATE car SET plate = ?, make = ?, model = ?, year = ?, vin = ?, nextEU = ?, mileage = ?, topSpeed = ?, engineLiters = ?, totalWeight = ?, seats = ?, fuelType = ? WHERE id = ?`,
+        [
+          car.plate,
+          car.make,
+          car.model,
+          car.year,
+          car.vin,
+          car.nextEU,
+          car.mileage,
+          car.topSpeed,
+          car.engineLiters,
+          car.totalWeight,
+          car.seats,
+          car.fuelType,
+          car.id
+        ]
+      );
+    });
+  }, [car, dbReady, isHydrating]);
+
+  useEffect(() => {
+    if (!dbReady || !dbRef.current || !activeCarId || isHydrating) return;
+    const db = dbRef.current;
+    enqueueWrite(async () => {
+      await db.withExclusiveTransactionAsync(async (tx: any) => {
+        await tx.runAsync('DELETE FROM logs WHERE carId = ?', [activeCarId]);
+        for (const log of logs) {
+          await tx.runAsync(
+            'INSERT OR REPLACE INTO logs (id, title, date, mileage, cost, type, notes, isSystemEvent, carId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [
+              log.id,
+              log.title,
+              log.date,
+              log.mileage,
+              log.cost,
+              log.type,
+              log.notes,
+              log.isSystemEvent ? 1 : 0,
+              activeCarId
+            ]
+          );
+        }
+      });
+    });
+  }, [logs, dbReady, activeCarId, isHydrating]);
+
+  useEffect(() => {
+    if (!dbReady || !dbRef.current) return;
+    const db = dbRef.current;
+    enqueueWrite(async () => {
+      await db.withExclusiveTransactionAsync(async (tx: any) => {
+        await tx.runAsync('DELETE FROM types');
+        for (const name of logTypes) {
+          await tx.runAsync('INSERT OR IGNORE INTO types (name) VALUES (?)', [name]);
+        }
+      });
+    });
+  }, [logTypes, dbReady]);
+
+  useEffect(() => {
+    if (!dbReady || !dbRef.current) return;
+    const db = dbRef.current;
+    enqueueWrite(async () => {
+      await db.withExclusiveTransactionAsync(async (tx: any) => {
+        await tx.runAsync('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ['units', units]);
+        await tx.runAsync('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ['appTheme', appTheme]);
+        if (activeCarId) {
+          await tx.runAsync('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ['activeCarId', String(activeCarId)]);
+        }
+      });
+    });
+  }, [units, appTheme, activeCarId, dbReady]);
+
+  useEffect(() => {
+    if (!dbReady || !dbRef.current || !activeCarId || isHydrating) return;
+    const db = dbRef.current;
+    enqueueWrite(async () => {
+      await db.withExclusiveTransactionAsync(async (tx: any) => {
+        await tx.runAsync('DELETE FROM docs WHERE carId = ?', [activeCarId]);
+        for (const doc of docs) {
+          await tx.runAsync(
+            'INSERT OR REPLACE INTO docs (id, title, expiry, type, carId) VALUES (?, ?, ?, ?, ?)',
+            [doc.id, doc.title, doc.expiry, doc.type, activeCarId]
+          );
+        }
+      });
+    });
+  }, [docs, dbReady, activeCarId, isHydrating]);
 
   const openAddLog = () => setModals((prev) => ({ ...prev, addLog: true }));
   const closeAddLog = () => {
@@ -337,21 +718,89 @@ export default function App() {
   const handleRegister = async (plate: string) => {
     try {
       const data = await fetchCarDetails(plate);
-      setCar(data);
-      // Create initial log
-      const initLog: ServiceLog = {
-        id: Date.now().toString(),
-        title: 'Car Added to Glovebox',
-        date: new Date().toISOString().split('T')[0],
-        mileage: 0,
-        cost: 0,
-        type: 'system',
-        notes: 'Vehicle imported via Statens Vegvesen API.',
-        isSystemEvent: true
-      };
-      setLogs([initLog]);
-      setView('garage');
-      pagerRef.current?.setPage(0);
+        if (dbReady && dbRef.current) {
+          const db = dbRef.current;
+          const existing = await db.getFirstAsync<any>('SELECT id FROM car WHERE plate = ?', [
+            data.plate
+          ]);
+        let carId = existing?.id ? Number(existing.id) : null;
+        if (carId) {
+          await db.runAsync(
+            `UPDATE car SET make = ?, model = ?, year = ?, vin = ?, nextEU = ?, mileage = ?, topSpeed = ?, engineLiters = ?, totalWeight = ?, seats = ?, fuelType = ? WHERE id = ?`,
+            [
+              data.make,
+              data.model,
+              data.year,
+              data.vin,
+              data.nextEU,
+              data.mileage,
+              data.topSpeed,
+              data.engineLiters,
+              data.totalWeight,
+              data.seats,
+              data.fuelType,
+              carId
+            ]
+          );
+        } else {
+          const insertResult = await db.runAsync(
+            `INSERT INTO car (plate, make, model, year, vin, nextEU, mileage, topSpeed, engineLiters, totalWeight, seats, fuelType)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              data.plate,
+              data.make,
+              data.model,
+              data.year,
+              data.vin,
+              data.nextEU,
+              data.mileage,
+              data.topSpeed,
+              data.engineLiters,
+              data.totalWeight,
+              data.seats,
+              data.fuelType
+            ]
+          );
+          carId = insertResult.lastInsertRowId;
+        }
+
+        const savedCar: Car = { ...data, id: carId || Date.now() };
+        setCars((prev) => {
+          const next = prev.filter((c) => c.id !== savedCar.id);
+          return [savedCar, ...next];
+        });
+        setCar(savedCar);
+        setActiveCarId(savedCar.id);
+
+        const initLog: ServiceLog = {
+          id: Date.now().toString(),
+          title: 'Car Added to Glovebox',
+          date: new Date().toISOString().split('T')[0],
+          mileage: 0,
+          cost: 0,
+          type: 'system',
+          notes: 'Vehicle imported via Statens Vegvesen API.',
+          isSystemEvent: true
+        };
+        await db.runAsync(
+          'INSERT OR REPLACE INTO logs (id, title, date, mileage, cost, type, notes, isSystemEvent, carId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [
+            initLog.id,
+            initLog.title,
+            initLog.date,
+            initLog.mileage,
+            initLog.cost,
+            initLog.type,
+            initLog.notes,
+            initLog.isSystemEvent ? 1 : 0,
+            savedCar.id
+          ]
+        );
+        setLogs([initLog]);
+        setIsHydrating(true);
+        setView('garage');
+        pagerRef.current?.setPage(0);
+      }
     } catch (e) {
       Alert.alert("Failed", "Could not fetch car details.");
     }
@@ -388,7 +837,38 @@ export default function App() {
   const deleteCar = () => {
     Alert.alert("Nuclear Option", "Delete this car and all history?", [
       { text: "Cancel", style: 'cancel' },
-      { text: "Delete", style: 'destructive', onPress: () => { setCar(null); setLogs([]); setView('onboarding'); } }
+      { text: "Delete", style: 'destructive', onPress: () => {
+        setCar(null);
+        setLogs([]);
+        setView('onboarding');
+        if (dbReady && dbRef.current && activeCarId) {
+          const db = dbRef.current;
+          const removedId = activeCarId;
+          enqueueWrite(async () => {
+            await db.withExclusiveTransactionAsync(async (tx: any) => {
+              await tx.runAsync('DELETE FROM car WHERE id = ?', [removedId]);
+              await tx.runAsync('DELETE FROM logs WHERE carId = ?', [removedId]);
+              await tx.runAsync('DELETE FROM docs WHERE carId = ?', [removedId]);
+            });
+          });
+        }
+        const remainingCars = cars.filter((item) => item.id !== activeCarId);
+        setCars(remainingCars);
+        if (remainingCars.length) {
+          const next = remainingCars[0];
+          setIsHydrating(true);
+          setCar(next);
+          setActiveCarId(next.id);
+          setView('garage');
+          pagerRef.current?.setPage(0);
+        } else {
+          setCar(null);
+          setActiveCarId(null);
+          setLogs([]);
+          setDocs(DEFAULT_DOCS);
+          setView('onboarding');
+        }
+      } }
     ]);
   };
 
@@ -397,10 +877,8 @@ export default function App() {
   return (
     <ThemeContext.Provider value={{ theme, statusBarStyle }}>
       <StylesContext.Provider value={styles}>
-        {view === 'onboarding' ? (
-          <Onboarding onRegister={handleRegister} />
-        ) : (
-          <View style={styles.container}>
+        <View style={styles.container}>
+          <Animated.View style={[styles.container, styles.appLayer, { transform: [{ translateX: appX }] }]}>
             <StatusBar style={statusBarStyle} />
 
             {/* Dynamic Header Area (Part of ScrollView in sub-screens, or Fixed) */}
@@ -518,8 +996,24 @@ export default function App() {
           units={units}
         />
             </SafeAreaView>
-          </View>
-        )}
+          </Animated.View>
+          <Animated.View
+            style={[styles.container, styles.onboardingLayer, { transform: [{ translateX: onboardingX }] }]}
+            pointerEvents={view === 'onboarding' ? 'auto' : 'none'}
+          >
+            <Onboarding
+              onRegister={handleRegister}
+              cars={cars}
+              onSelectCar={(selected: Car) => {
+                setIsHydrating(true);
+                setCar(selected);
+                setActiveCarId(selected.id);
+                setView('garage');
+                pagerRef.current?.setPage(0);
+              }}
+            />
+          </Animated.View>
+        </View>
       </StylesContext.Provider>
     </ThemeContext.Provider>
   );
@@ -1085,32 +1579,70 @@ const TypesPage = ({ types, selectedType, onSelectType, onAddType, onRemoveType,
   );
 };
 
-const Onboarding = ({ onRegister }: any) => {
+const Onboarding = ({ onRegister, cars, onSelectCar }: any) => {
   const { theme, statusBarStyle } = useTheme();
   const styles = useStyles();
   const [plate, setPlate] = useState('');
   const [load, setLoad] = useState(false);
   return (
-    <SafeAreaView style={[styles.container, {justifyContent: 'center', alignItems: 'center'}]}>
-      <StatusBar style={statusBarStyle} />
-      <Ionicons name="car-sport" size={80} color={theme.primary} style={{marginBottom: 20}} />
-      <Text style={{fontSize: 32, fontWeight: '700', color: theme.text}}>Glovebox</Text>
-      <Text style={{color: theme.textDim, marginBottom: 40}}>Ready in seconds.</Text>
-      <TextInput 
-        style={[styles.input, {width: '80%', textAlign: 'center', fontSize: 24}]} 
-        placeholder="LICENSE PLATE" 
-        placeholderTextColor={theme.textDim}
-        value={plate}
-        onChangeText={setPlate}
-        autoCapitalize="characters"
-      />
-      <TouchableOpacity 
-        style={[styles.mainBtn, {width: '80%', marginTop: 20}]} 
-        onPress={() => { setLoad(true); onRegister(plate).finally(() => setLoad(false)); }}
-      >
-        {load ? <ActivityIndicator color="white" /> : <Text style={styles.btnTxt}>Start</Text>}
-      </TouchableOpacity>
-    </SafeAreaView>
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 12 : 0}
+    >
+      <SafeAreaView style={[styles.container, styles.onboardingWrap]}>
+        <StatusBar style={statusBarStyle} />
+        <View style={styles.onboardingCard}>
+          <View style={styles.onboardingIcon}>
+            <Ionicons name="car-sport" size={40} color={theme.primary} />
+          </View>
+          <Text style={styles.onboardingTitle}>Glovebox</Text>
+          <Text style={styles.onboardingSub}>Log service history in seconds.</Text>
+          {!!cars?.length && (
+            <View style={styles.onboardingList}>
+              <View style={styles.onboardingListGroup}>
+                {cars.map((item: Car, index: number) => {
+                  const BrandLogo = getBrandLogo(item.make);
+                  return (
+                    <View key={item.id}>
+                      <TouchableOpacity style={styles.onboardingRow} onPress={() => onSelectCar(item)}>
+                        <View style={styles.onboardingLogo}>
+                          {BrandLogo ? (
+                            <BrandLogo width="100%" height="100%" preserveAspectRatio="xMidYMid meet" />
+                          ) : (
+                            <Text style={styles.onboardingLogoText}>LOGO</Text>
+                          )}
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.onboardingRowTitle}>{item.make} {item.model}</Text>
+                          <Text style={styles.onboardingRowSub}>{String(item.plate || '').replace(/\s+/g, '')}</Text>
+                        </View>
+                        <Ionicons name="chevron-forward" size={18} color={theme.textDim} />
+                      </TouchableOpacity>
+                      {index < cars.length - 1 && <View style={styles.onboardingDivider} />}
+                    </View>
+                  );
+                })}
+              </View>
+            </View>
+          )}
+          <TextInput 
+            style={[styles.input, styles.onboardingInput]} 
+            placeholder="LICENSE PLATE" 
+            placeholderTextColor={theme.textDim}
+            value={plate}
+            onChangeText={setPlate}
+            autoCapitalize="characters"
+          />
+          <TouchableOpacity 
+            style={[styles.mainBtn, styles.onboardingBtn]} 
+            onPress={() => { setLoad(true); onRegister(plate).finally(() => setLoad(false)); }}
+          >
+            {load ? <ActivityIndicator color="white" /> : <Text style={styles.btnTxt}>Start</Text>}
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    </KeyboardAvoidingView>
   );
 };
 
@@ -1118,12 +1650,29 @@ const Onboarding = ({ onRegister }: any) => {
 
 const createStyles = (theme: typeof LIGHT_THEME) => StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.bg },
+  appLayer: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
+  onboardingLayer: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
   screenContainer: { flex: 1, padding: 20, backgroundColor: theme.bg },
+  onboardingWrap: { justifyContent: 'center', alignItems: 'center', padding: 24 },
+  onboardingCard: { width: '100%', maxWidth: 360, backgroundColor: theme.card, borderRadius: 18, padding: 20, borderWidth: 1, borderColor: theme.cardBorder, alignItems: 'center', shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 12, shadowOffset: { width: 0, height: 8 }, elevation: 2 },
+  onboardingIcon: { width: 56, height: 56, borderRadius: 16, backgroundColor: theme.surface, alignItems: 'center', justifyContent: 'center', marginBottom: 14, borderWidth: 1, borderColor: theme.cardBorder },
+  onboardingTitle: { fontSize: 28, fontWeight: '700', color: theme.text },
+  onboardingSub: { color: theme.textDim, marginTop: 4, marginBottom: 20 },
+  onboardingList: { width: '100%', marginBottom: 16 },
+  onboardingListGroup: { backgroundColor: theme.surface, borderRadius: 14, borderWidth: 1, borderColor: theme.cardBorder, overflow: 'hidden' },
+  onboardingRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10, gap: 10 },
+  onboardingLogo: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center' },
+  onboardingLogoText: { color: theme.primary, fontSize: 10, fontWeight: '700' },
+  onboardingRowTitle: { color: theme.text, fontWeight: '600', fontSize: 14 },
+  onboardingRowSub: { color: theme.textDim, fontSize: 12, marginTop: 2 },
+  onboardingDivider: { height: 1, backgroundColor: theme.cardBorder },
+  onboardingInput: { width: '100%', textAlign: 'center', fontSize: 22 },
+  onboardingBtn: { width: '100%' },
   
   // Hero
   heroContainer: { backgroundColor: theme.card, margin: 16, padding: 16, borderRadius: 14, borderWidth: 1, borderColor: theme.cardBorder, shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 12, shadowOffset: { width: 0, height: 8 }, elevation: 2 },
   heroLogo: { fontSize: 16, color: theme.primary, fontWeight: '600', letterSpacing: 0.6, textTransform: 'uppercase' },
-  brandLogoWrap: { width: 42, height: 42, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
+  brandLogoWrap: { width: 42, height: 42, alignItems: 'center', justifyContent: 'center' },
   headerBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 },
   headerTitle: { color: theme.text, fontSize: 28, fontWeight: '700' },
   headerPill: { backgroundColor: theme.primary, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, flexDirection: 'row', alignItems: 'center', gap: 6 },
