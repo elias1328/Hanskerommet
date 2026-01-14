@@ -7,12 +7,14 @@ import {
   ScrollView,
   TextInput,
   Alert,
+  ActionSheetIOS,
   KeyboardAvoidingView,
   Platform,
   useColorScheme,
   ActivityIndicator,
   FlatList,
   Modal,
+  Pressable,
   Animated,
   LayoutAnimation,
   UIManager,
@@ -84,7 +86,10 @@ const DEFAULT_DOCS: Doc[] = [
   { id: '2', title: 'Vognkort (Del 2)', expiry: 'Never', type: 'vognkort' }
 ];
 
-const formatDistance = (km: number, units: 'km' | 'mi') => {
+const formatDistance = (km: number | undefined | null, units: 'km' | 'mi') => {
+  if (km === undefined || km === null || Number.isNaN(km)) {
+    return units === 'mi' ? '0 mi' : '0 km';
+  }
   if (units === 'mi') {
     const miles = km * 0.621371;
     return `${miles.toLocaleString(undefined, { maximumFractionDigits: 0 })} mi`;
@@ -278,6 +283,7 @@ export default function App() {
 
   // Modals
   const [modals, setModals] = useState({ addLog: false, mileage: false, types: false });
+  const [editingLog, setEditingLog] = useState<ServiceLog | null>(null);
 
   // --- ACTIONS ---
   useEffect(() => {
@@ -655,7 +661,11 @@ export default function App() {
     });
   }, [docs, dbReady, activeCarId, isHydrating]);
 
-  const openAddLog = () => setModals((prev) => ({ ...prev, addLog: true }));
+  const openAddLog = () => {
+    setEditingLog(null);
+    setSelectedLogType('service');
+    setModals((prev) => ({ ...prev, addLog: true }));
+  };
   const closeAddLog = () => {
     Animated.timing(addLogX, {
       toValue: screenWidth,
@@ -663,6 +673,7 @@ export default function App() {
       useNativeDriver: true,
     }).start(({ finished }) => {
       if (finished) {
+        setEditingLog(null);
         setModals((prev) => ({ ...prev, addLog: false }));
       }
     });
@@ -834,6 +845,28 @@ export default function App() {
     setLogs([log, ...logs]);
   };
 
+  const handleEditLog = (log: ServiceLog) => {
+    setEditingLog(log);
+    setSelectedLogType(log.type || 'service');
+    setModals((prev) => ({ ...prev, addLog: true }));
+  };
+
+  const handleDeleteLog = (log: ServiceLog) => {
+    Alert.alert('Delete Log', 'Remove this log entry?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => {
+          setLogs((prev) => prev.filter((item) => item.id !== log.id));
+          if (editingLog?.id === log.id) {
+            setEditingLog(null);
+          }
+        }
+      }
+    ]);
+  };
+
   const deleteCar = () => {
     Alert.alert("Nuclear Option", "Delete this car and all history?", [
       { text: "Cancel", style: 'cancel' },
@@ -898,13 +931,17 @@ export default function App() {
                     onOpenLog={openAddLog}
                     onOpenMileage={openMileageInput}
                     onViewAllLogs={() => navigateTo('logs')}
+                    onEditLog={handleEditLog}
+                    onDeleteLog={handleDeleteLog}
                     units={units}
                   />
                 </View>
                 <View key="logs" style={{ flex: 1, backgroundColor: theme.bg }}>
                   <TimelineScreen
                     logs={logs}
-                    onOpenLog={() => setModals({ ...modals, addLog: true })}
+                    onOpenLog={openAddLog}
+                    onEditLog={handleEditLog}
+                    onDeleteLog={handleDeleteLog}
                     themeKey={resolvedTheme}
                     units={units}
                   />
@@ -943,12 +980,21 @@ export default function App() {
                 <Animated.View style={[styles.addLogOverlay, { transform: [{ translateX: addLogX }] }]}>
                   <AddLogModal
                     onClose={closeAddLog}
-              onSave={(log: ServiceLog) => { handleAddLog(log); closeAddLog(); setSelectedLogType('service'); }}
+              onSave={(log: ServiceLog) => {
+                if (editingLog) {
+                  setLogs((prev) => prev.map((item) => (item.id === log.id ? { ...item, ...log } : item)));
+                } else {
+                  handleAddLog(log);
+                }
+                closeAddLog();
+                setSelectedLogType('service');
+              }}
               mileagePlaceholder={car ? formatDistance(car.mileage, units).replace(/\\s?(km|mi)$/, '') : 'Auto'}
               logTypes={logTypes}
               logType={selectedLogType}
               onManageTypes={openTypes}
               units={units}
+              initialLog={editingLog}
             />
           </Animated.View>
         )}
@@ -1021,14 +1067,18 @@ export default function App() {
 
 // --- SCREENS ---
 
-const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, units }: any) => {
+const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, onEditLog, onDeleteLog, units }: any) => {
   const { theme } = useTheme();
   const styles = useStyles();
-  const daysToEu = Math.ceil((new Date(car.nextEU).getTime() - new Date().getTime()) / (1000 * 3600 * 24));
-  const euStatus = daysToEu < 30 ? 'danger' : daysToEu < 120 ? 'warning' : 'success';
+  const safeCar = car ?? {};
+  const nextEuRaw = safeCar.nextEU;
+  const daysToEu = nextEuRaw
+    ? Math.ceil((new Date(nextEuRaw).getTime() - new Date().getTime()) / (1000 * 3600 * 24))
+    : 0;
+  const euStatus = nextEuRaw ? (daysToEu < 30 ? 'danger' : daysToEu < 120 ? 'warning' : 'success') : 'warning';
   const lastExpense = logs.find((log: ServiceLog) => log.cost > 0)?.cost || 0;
-  const plateDisplay = String(car.plate || '').replace(/\s+/g, '');
-  const BrandLogo = getBrandLogo(car.make);
+  const plateDisplay = String(safeCar.plate || '').replace(/\s+/g, '');
+  const BrandLogo = getBrandLogo(safeCar.make);
 
   return (
     <ScrollView
@@ -1048,7 +1098,7 @@ const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, unit
       {/* Hero Card */}
       <View style={styles.heroContainer}>
         <View style={styles.heroTopRow}>
-          <Text style={styles.heroBrand}>{car.make}</Text>
+          <Text style={styles.heroBrand}>{safeCar.make}</Text>
           {BrandLogo ? (
             <View style={styles.brandLogoWrap}>
               <BrandLogo width="100%" height="100%" preserveAspectRatio="xMidYMid meet" />
@@ -1057,9 +1107,9 @@ const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, unit
             <Text style={styles.heroLogo}>LOGO</Text>
           )}
         </View>
-        <Text style={styles.heroModel}>{car.model}</Text>
+        <Text style={styles.heroModel}>{safeCar.model}</Text>
         <View style={styles.heroBottomRow}>
-          <Text style={styles.heroLinePlate}>{car.year}</Text>
+          <Text style={styles.heroLinePlate}>{safeCar.year}</Text>
           <Text style={styles.heroLinePlate}>{plateDisplay}</Text>
         </View>
 
@@ -1071,7 +1121,7 @@ const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, unit
         <View style={styles.tileGrid}>
           <InfoTile
             label="Odometer"
-            value={formatDistance(car.mileage, units)}
+            value={formatDistance(safeCar.mileage, units)}
             sub="Tap to update"
             tone={theme.primary}
             icon="speedometer"
@@ -1080,7 +1130,7 @@ const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, unit
           <InfoTile
             label="EU Control"
             value={daysToEu < 0 ? 'Overdue' : `${daysToEu} days`}
-            sub={car.nextEU}
+            sub={nextEuRaw || 'N/A'}
             tone={theme[euStatus]}
             icon="calendar"
           />
@@ -1107,7 +1157,9 @@ const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, unit
           <Text style={styles.sectionTitle}>RECENT ACTIVITY</Text>
           <TouchableOpacity onPress={onViewAllLogs}><Text style={{color: theme.primary, fontWeight: '600'}}>View All</Text></TouchableOpacity>
         </View>
-        {logs.slice(0,3).map((l: ServiceLog) => <LogRow key={l.id} log={l} units={units} />)}
+        {logs.slice(0,3).map((l: ServiceLog) => (
+          <LogRow key={l.id} log={l} units={units} onEdit={onEditLog} onDelete={onDeleteLog} />
+        ))}
       </View>
 
     </ScrollView>
@@ -1153,7 +1205,7 @@ const VaultScreen = ({ docs, themeKey }: { docs: Doc[]; themeKey: string }) => {
   );
 };
 
-const TimelineScreen = ({ logs, onOpenLog, themeKey, units }: { logs: ServiceLog[]; onOpenLog: () => void; themeKey: string; units: 'km' | 'mi' }) => {
+const TimelineScreen = ({ logs, onOpenLog, onEditLog, onDeleteLog, themeKey, units }: { logs: ServiceLog[]; onOpenLog: () => void; onEditLog: (log: ServiceLog) => void; onDeleteLog: (log: ServiceLog) => void; themeKey: string; units: 'km' | 'mi' }) => {
   const { theme } = useTheme();
   const styles = useStyles();
   return (
@@ -1173,7 +1225,9 @@ const TimelineScreen = ({ logs, onOpenLog, themeKey, units }: { logs: ServiceLog
       extraData={themeKey}
       keyExtractor={l => l.id}
       contentContainerStyle={{paddingBottom: 100}}
-      renderItem={({item}) => <LogRow log={item} units={units} />}
+      renderItem={({item}) => (
+        <LogRow log={item} units={units} onEdit={onEditLog} onDelete={onDeleteLog} />
+      )}
     />
   </View>
   );
@@ -1182,6 +1236,7 @@ const TimelineScreen = ({ logs, onOpenLog, themeKey, units }: { logs: ServiceLog
 const ConfigScreen = ({ car, onDelete, onChangeCar, units, appTheme, onChangeUnits, onChangeAppTheme }: any) => {
   const { theme } = useTheme();
   const styles = useStyles();
+  const safeCar = car ?? {};
   return (
     <View style={styles.screenContainer}>
     <Text style={styles.pageTitle}>Settings</Text>
@@ -1190,12 +1245,12 @@ const ConfigScreen = ({ car, onDelete, onChangeCar, units, appTheme, onChangeUni
     <View style={styles.settingsGroup}>
       <View style={styles.settingsRow}>
         <Text style={styles.settingsLabel}>Plate Number</Text>
-        <Text style={styles.settingsValue}>{car.plate}</Text>
+        <Text style={styles.settingsValue}>{safeCar.plate}</Text>
       </View>
       <View style={styles.settingsDivider} />
       <View style={styles.settingsRow}>
         <Text style={styles.settingsLabel}>VIN</Text>
-        <Text style={styles.settingsValue}>{car.vin}</Text>
+        <Text style={styles.settingsValue}>{safeCar.vin}</Text>
       </View>
       <View style={styles.settingsDivider} />
       <TouchableOpacity style={styles.settingsRow} onPress={onChangeCar}>
@@ -1286,31 +1341,54 @@ const InfoTile = ({ label, value, sub, tone, icon, onPress }: any) => {
   );
 };
 
-const LogRow = ({ log, units }: { log: ServiceLog; units: 'km' | 'mi' }) => {
+const LogRow = ({ log, units, onEdit, onDelete }: { log: ServiceLog; units: 'km' | 'mi'; onEdit?: (log: ServiceLog) => void; onDelete?: (log: ServiceLog) => void }) => {
   const { theme } = useTheme();
   const styles = useStyles();
+  const openActions = () => {
+    const actions = ['Edit', 'Delete', 'Cancel'];
+    const cancelIndex = 2;
+    const destructiveIndex = 1;
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { options: actions, cancelButtonIndex: cancelIndex, destructiveButtonIndex: destructiveIndex },
+        (buttonIndex) => {
+          if (buttonIndex === 0) onEdit?.(log);
+          if (buttonIndex === 1) onDelete?.(log);
+        }
+      );
+      return;
+    }
+    Alert.alert('Log Entry', 'Choose an action', [
+      { text: 'Edit', onPress: () => onEdit?.(log) },
+      { text: 'Delete', style: 'destructive', onPress: () => onDelete?.(log) },
+      { text: 'Cancel', style: 'cancel' }
+    ]);
+  };
+
   return (
-    <View style={styles.logRow}>
-      <View style={styles.logTimelineLine} />
-      <View style={[styles.logIconParams, { borderColor: log.isSystemEvent ? theme.textDim : theme.primary }]}>
-        <Ionicons 
-          name={log.isSystemEvent ? "settings" : getTypeIconName(log.type)} 
-          size={14} 
-          color={log.isSystemEvent ? theme.textDim : theme.primary} 
-        />
-      </View>
-      <View style={styles.logContent}>
-        <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
-          <Text style={styles.logTitle}>{log.title}</Text>
-          <Text style={styles.logDate}>{log.date}</Text>
+    <Pressable onLongPress={openActions}>
+      <View style={styles.logRow}>
+        <View style={styles.logTimelineLine} />
+        <View style={[styles.logIconParams, { borderColor: log.isSystemEvent ? theme.textDim : theme.primary }]}>
+          <Ionicons 
+            name={log.isSystemEvent ? "settings" : getTypeIconName(log.type)} 
+            size={14} 
+            color={log.isSystemEvent ? theme.textDim : theme.primary} 
+          />
         </View>
-        {!!log.notes && <Text style={styles.logNotes}>{log.notes}</Text>}
-        <View style={{flexDirection: 'row', justifyContent: 'space-between', marginTop: 4}}>
-          <Text style={styles.logMeta}>{log.mileage > 0 ? formatDistance(log.mileage, units) : ''}</Text>
-          {log.cost > 0 && <Text style={styles.logCost}>{log.cost} kr</Text>}
+        <View style={styles.logContent}>
+          <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
+            <Text style={styles.logTitle}>{log.title}</Text>
+            <Text style={styles.logDate}>{log.date}</Text>
+          </View>
+          {!!log.notes && <Text style={styles.logNotes}>{log.notes}</Text>}
+          <View style={{flexDirection: 'row', justifyContent: 'space-between', marginTop: 4}}>
+            <Text style={styles.logMeta}>{log.mileage > 0 ? formatDistance(log.mileage, units) : ''}</Text>
+            {log.cost > 0 && <Text style={styles.logCost}>{log.cost} kr</Text>}
+          </View>
         </View>
       </View>
-    </View>
+    </Pressable>
   );
 };
 
@@ -1337,7 +1415,7 @@ const getTypeIconName = (type: string) => {
 
 // --- MODALS ---
 
-const AddLogModal = ({ onClose, onSave, mileagePlaceholder, logTypes, logType, onManageTypes, units }: any) => {
+const AddLogModal = ({ onClose, onSave, mileagePlaceholder, logTypes, logType, onManageTypes, units, initialLog }: any) => {
   const { theme } = useTheme();
   const styles = useStyles();
   const [title, setTitle] = useState('');
@@ -1352,24 +1430,46 @@ const AddLogModal = ({ onClose, onSave, mileagePlaceholder, logTypes, logType, o
     String(value || '').replace(/^\w/, (char) => char.toUpperCase()) || 'Service';
   const availableTypes: LogType[] = logTypes?.length ? logTypes : ['service'];
 
+  useEffect(() => {
+    if (!initialLog) {
+      setTitle('');
+      setCost('');
+      setMileage('');
+      setNotes('');
+      setLogDate(new Date());
+      return;
+    }
+    setTitle(initialLog.title || '');
+    setCost(initialLog.cost ? String(initialLog.cost) : '');
+    const displayMileage =
+      typeof initialLog.mileage === 'number'
+        ? units === 'mi'
+          ? Math.round(initialLog.mileage * 0.621371)
+          : initialLog.mileage
+        : '';
+    setMileage(displayMileage ? String(displayMileage) : '');
+    setNotes(initialLog.notes || '');
+    setLogDate(initialLog.date ? new Date(initialLog.date) : new Date());
+  }, [initialLog, units]);
+
   return (
     <View style={[styles.modalBase, { backgroundColor: theme.bg }]}>
       <View style={styles.modalHeader}>
         <TouchableOpacity onPress={onClose}>
           <Text style={styles.modalCancelText}>Cancel</Text>
         </TouchableOpacity>
-        <Text style={styles.modalH1}>New Log</Text>
+        <Text style={styles.modalH1}>{initialLog ? 'Edit Log' : 'New Log'}</Text>
         <TouchableOpacity
             onPress={() => {
               onSave({
-                id: Date.now().toString(),
+                id: initialLog?.id || Date.now().toString(),
                 title: title || typeLabel(logType),
                 cost: parseInt(cost) || 0,
                 mileage: toKilometers(parseInt(mileage) || 0, units),
                 date: logDate.toISOString().split('T')[0],
                 type: logType,
                 notes,
-                isSystemEvent: false
+                isSystemEvent: initialLog?.isSystemEvent || false
               });
               setTitle('');
               setCost('');
