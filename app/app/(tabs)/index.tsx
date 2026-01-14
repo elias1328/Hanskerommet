@@ -27,6 +27,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient'; // Ensure you have expo-linear-gradient installed, or remove if standard Expo
 import { BlurView } from 'expo-blur';
 import PagerView from 'react-native-pager-view';
+import * as ImagePicker from 'expo-image-picker';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Swipeable } from 'react-native-gesture-handler';
 import { getBrandLogo } from '../../brand-logos';
@@ -54,6 +55,7 @@ interface ServiceLog {
   cost: number;
   type: LogType;
   notes: string;
+  projectId?: string | null;
   isSystemEvent: boolean; // If true, user cannot delete easily
 }
 
@@ -64,11 +66,39 @@ interface Doc {
   type: 'license' | 'insurance' | 'vognkort';
 }
 
+interface Project {
+  id: string;
+  title: string;
+  status: 'planned' | 'active' | 'done';
+  updatedAt: number;
+  carId: number;
+  description?: string | null;
+  category?: string | null;
+  budgetPlanned?: number | null;
+}
+
+interface ProjectMedia {
+  id: string;
+  projectId: string;
+  uri: string;
+  type: 'image';
+  carId: number;
+}
+
+interface LogMedia {
+  id: string;
+  logId: string;
+  uri: string;
+  type: 'image';
+  carId: number;
+}
+
 interface Car {
   id: number;
   plate: string;
   make: string;
   model: string;
+  nickname?: string | null;
   year: number;
   vin: string;
   nextEU: string;
@@ -237,6 +267,7 @@ export default function App() {
   const pagerRef = useRef<PagerView>(null);
   const dbRef = useRef<any>(null);
   const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const settingsProjectIdRef = useRef<string | null>(null);
   const tabKeys = ['garage', 'logs', 'vault', 'config'] as const;
   const screenWidth = Dimensions.get('window').width;
   const appX = useRef(new Animated.Value(screenWidth)).current;
@@ -244,6 +275,7 @@ export default function App() {
   const prevViewRef = useRef<'onboarding' | 'garage' | 'vault' | 'logs' | 'config'>('onboarding');
   const addLogX = useRef(new Animated.Value(screenWidth)).current;
   const typesX = useRef(new Animated.Value(screenWidth)).current;
+  const projectDetailX = useRef(new Animated.Value(screenWidth)).current;
   const [view, setView] = useState<'onboarding' | 'garage' | 'vault' | 'logs' | 'config'>('onboarding');
   const [cars, setCars] = useState<Car[]>([]);
   const [car, setCar] = useState<Car | null>(null);
@@ -258,6 +290,11 @@ export default function App() {
     'fuel',
   ]);
   const [docs, setDocs] = useState<Doc[]>(DEFAULT_DOCS);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [draftProjectId, setDraftProjectId] = useState<string | null>(null);
+  const [projectMedia, setProjectMedia] = useState<ProjectMedia[]>([]);
+  const [logMedia, setLogMedia] = useState<LogMedia[]>([]);
   const [units, setUnits] = useState<'km' | 'mi'>('km');
   const [appTheme, setAppTheme] = useState<'system' | 'light' | 'dark'>('system');
   const [dbReady, setDbReady] = useState(false);
@@ -282,8 +319,25 @@ export default function App() {
   const statusBarStyle: 'light' | 'dark' = resolvedTheme === 'dark' ? 'light' : 'dark';
 
   // Modals
-  const [modals, setModals] = useState({ addLog: false, mileage: false, types: false });
+  const [modals, setModals] = useState({
+    addLog: false,
+    mileage: false,
+    types: false,
+    projects: false,
+    projectForm: false,
+    projectDetail: false,
+    nickname: false,
+  });
   const [editingLog, setEditingLog] = useState<ServiceLog | null>(null);
+  const [editingProject, setEditingProject] = useState<Project | null>(null);
+  const [projectDetailId, setProjectDetailId] = useState<string | null>(null);
+  const [projectMediaViewer, setProjectMediaViewer] = useState<{ projectId: string; media: { id: string; uri: string }[]; index: number } | null>(null);
+  const [logMediaViewer, setLogMediaViewer] = useState<{ logId: string | null; index: number }>({ logId: null, index: 0 });
+  const [logMediaGrid, setLogMediaGrid] = useState<{ logId: string | null }>({ logId: null });
+  const [projectImageGrid, setProjectImageGrid] = useState<{ projectId: string | null }>({ projectId: null });
+  const [projectGridReturn, setProjectGridReturn] = useState<string | null>(null);
+  const [logGridReturn, setLogGridReturn] = useState<string | null>(null);
+  const [logFormSeed, setLogFormSeed] = useState<number>(0);
 
   // --- ACTIONS ---
   useEffect(() => {
@@ -341,6 +395,7 @@ export default function App() {
             plate TEXT,
             make TEXT,
             model TEXT,
+            nickname TEXT,
             year INTEGER,
             vin TEXT,
             nextEU TEXT,
@@ -360,6 +415,31 @@ export default function App() {
             type TEXT,
             notes TEXT,
             isSystemEvent INTEGER,
+            projectId TEXT,
+            carId INTEGER
+          );
+          CREATE TABLE IF NOT EXISTS projects (
+            id TEXT PRIMARY KEY NOT NULL,
+            title TEXT,
+            status TEXT,
+            updatedAt INTEGER,
+            description TEXT,
+            category TEXT,
+            budgetPlanned REAL,
+            carId INTEGER
+          );
+          CREATE TABLE IF NOT EXISTS project_media (
+            id TEXT PRIMARY KEY NOT NULL,
+            projectId TEXT,
+            uri TEXT,
+            type TEXT,
+            carId INTEGER
+          );
+          CREATE TABLE IF NOT EXISTS log_media (
+            id TEXT PRIMARY KEY NOT NULL,
+            logId TEXT,
+            uri TEXT,
+            type TEXT,
             carId INTEGER
           );
           CREATE TABLE IF NOT EXISTS types (
@@ -381,9 +461,34 @@ export default function App() {
         if (!logColumns.some((col: any) => col.name === 'carId')) {
           await db.execAsync('ALTER TABLE logs ADD COLUMN carId INTEGER');
         }
+        if (!logColumns.some((col: any) => col.name === 'projectId')) {
+          await db.execAsync('ALTER TABLE logs ADD COLUMN projectId TEXT');
+        }
+        const carColumns = await db.getAllAsync<any>('PRAGMA table_info(car)');
+        if (!carColumns.some((col: any) => col.name === 'nickname')) {
+          await db.execAsync('ALTER TABLE car ADD COLUMN nickname TEXT');
+        }
         const docColumns = await db.getAllAsync<any>('PRAGMA table_info(docs)');
         if (!docColumns.some((col: any) => col.name === 'carId')) {
           await db.execAsync('ALTER TABLE docs ADD COLUMN carId INTEGER');
+        }
+        const mediaColumns = await db.getAllAsync<any>('PRAGMA table_info(project_media)');
+        if (!mediaColumns.some((col: any) => col.name === 'carId')) {
+          await db.execAsync('ALTER TABLE project_media ADD COLUMN carId INTEGER');
+        }
+        const logMediaColumns = await db.getAllAsync<any>('PRAGMA table_info(log_media)');
+        if (!logMediaColumns.some((col: any) => col.name === 'carId')) {
+          await db.execAsync('ALTER TABLE log_media ADD COLUMN carId INTEGER');
+        }
+        const projectColumns = await db.getAllAsync<any>('PRAGMA table_info(projects)');
+        if (!projectColumns.some((col: any) => col.name === 'description')) {
+          await db.execAsync('ALTER TABLE projects ADD COLUMN description TEXT');
+        }
+        if (!projectColumns.some((col: any) => col.name === 'category')) {
+          await db.execAsync('ALTER TABLE projects ADD COLUMN category TEXT');
+        }
+        if (!projectColumns.some((col: any) => col.name === 'budgetPlanned')) {
+          await db.execAsync('ALTER TABLE projects ADD COLUMN budgetPlanned REAL');
         }
 
         const carRows = await db.getAllAsync<any>('SELECT * FROM car ORDER BY id DESC');
@@ -398,6 +503,7 @@ export default function App() {
             plate: row.plate,
             make: row.make,
             model: row.model,
+            nickname: row.nickname,
             year: Number(row.year) || 0,
             vin: row.vin,
             nextEU: row.nextEU,
@@ -442,6 +548,9 @@ export default function App() {
               storedActiveCarId = parsed;
             }
           }
+          if (row.key === 'activeProjectId' && row.value) {
+            settingsProjectIdRef.current = row.value;
+          }
         });
 
         const activeId = storedActiveCarId ?? (carRows.length ? Number(carRows[0].id) : null);
@@ -455,6 +564,7 @@ export default function App() {
               plate: activeCar.plate,
               make: activeCar.make,
               model: activeCar.model,
+              nickname: activeCar.nickname,
               year: Number(activeCar.year) || 0,
               vin: activeCar.vin,
               nextEU: activeCar.nextEU,
@@ -499,6 +609,16 @@ export default function App() {
     }).start();
   }, [modals.types, screenWidth, typesX]);
 
+  useEffect(() => {
+    if (!modals.projectDetail) return;
+    projectDetailX.setValue(screenWidth);
+    Animated.timing(projectDetailX, {
+      toValue: 0,
+      duration: 250,
+      useNativeDriver: true,
+    }).start();
+  }, [modals.projectDetail, projectDetailX, screenWidth]);
+
   const loadCarData = async (carId: number) => {
     if (!dbRef.current) return;
     const db = dbRef.current;
@@ -518,9 +638,60 @@ export default function App() {
           cost: Number(row.cost) || 0,
           type: row.type,
           notes: row.notes || '',
+          projectId: row.projectId || null,
           isSystemEvent: Number(row.isSystemEvent) === 1
         }))
       );
+
+      const logMediaRows = await db.getAllAsync<any>(
+        'SELECT * FROM log_media WHERE carId = ?',
+        [carId]
+      );
+      setLogMedia(
+        logMediaRows.map((row: any) => ({
+          id: row.id,
+          logId: row.logId,
+          uri: row.uri,
+          type: (row.type as 'image') || 'image',
+          carId: Number(row.carId) || carId
+        }))
+      );
+
+      const projectRows = await db.getAllAsync<any>(
+        'SELECT * FROM projects WHERE carId = ? ORDER BY updatedAt DESC',
+        [carId]
+      );
+      const mappedProjects = projectRows.map((row: any) => ({
+        id: row.id,
+        title: row.title,
+        status: (row.status as Project['status']) || 'active',
+        updatedAt: Number(row.updatedAt) || Date.now(),
+        carId: Number(row.carId) || carId,
+        description: row.description,
+        category: row.category,
+        budgetPlanned: row.budgetPlanned !== null && row.budgetPlanned !== undefined ? Number(row.budgetPlanned) : null
+      }));
+      setProjects(mappedProjects);
+      const storedProjectId = settingsProjectIdRef.current;
+      const nextProjectId =
+        (storedProjectId && mappedProjects.some((p) => p.id === storedProjectId)
+          ? storedProjectId
+          : null) || mappedProjects[0]?.id || null;
+      settingsProjectIdRef.current = null;
+      setActiveProjectId(nextProjectId);
+
+      const mediaRows = await db.getAllAsync<any>(
+        'SELECT * FROM project_media WHERE carId = ?',
+        [carId]
+      );
+      const mappedMedia = mediaRows.map((row: any) => ({
+        id: row.id,
+        projectId: row.projectId,
+        uri: row.uri,
+        type: (row.type as 'image') || 'image',
+        carId: Number(row.carId) || carId
+      }));
+      setProjectMedia(mappedMedia);
 
       const docsRows = await db.getAllAsync<any>('SELECT * FROM docs WHERE carId = ?', [carId]);
       if (docsRows.length) {
@@ -572,11 +743,12 @@ export default function App() {
     const db = dbRef.current;
     enqueueWrite(async () => {
       await db.runAsync(
-        `UPDATE car SET plate = ?, make = ?, model = ?, year = ?, vin = ?, nextEU = ?, mileage = ?, topSpeed = ?, engineLiters = ?, totalWeight = ?, seats = ?, fuelType = ? WHERE id = ?`,
+        `UPDATE car SET plate = ?, make = ?, model = ?, nickname = ?, year = ?, vin = ?, nextEU = ?, mileage = ?, topSpeed = ?, engineLiters = ?, totalWeight = ?, seats = ?, fuelType = ? WHERE id = ?`,
         [
           car.plate,
           car.make,
           car.model,
+          car.nickname || null,
           car.year,
           car.vin,
           car.nextEU,
@@ -600,7 +772,7 @@ export default function App() {
         await tx.runAsync('DELETE FROM logs WHERE carId = ?', [activeCarId]);
         for (const log of logs) {
           await tx.runAsync(
-            'INSERT OR REPLACE INTO logs (id, title, date, mileage, cost, type, notes, isSystemEvent, carId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            'INSERT OR REPLACE INTO logs (id, title, date, mileage, cost, type, notes, isSystemEvent, projectId, carId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             [
               log.id,
               log.title,
@@ -610,6 +782,7 @@ export default function App() {
               log.type,
               log.notes,
               log.isSystemEvent ? 1 : 0,
+              log.projectId || null,
               activeCarId
             ]
           );
@@ -617,6 +790,63 @@ export default function App() {
       });
     });
   }, [logs, dbReady, activeCarId, isHydrating]);
+
+  useEffect(() => {
+    if (!dbReady || !dbRef.current || !activeCarId || isHydrating) return;
+    const db = dbRef.current;
+    enqueueWrite(async () => {
+      await db.withExclusiveTransactionAsync(async (tx: any) => {
+        await tx.runAsync('DELETE FROM projects WHERE carId = ?', [activeCarId]);
+        for (const project of projects) {
+          await tx.runAsync(
+            'INSERT OR REPLACE INTO projects (id, title, status, updatedAt, description, category, budgetPlanned, carId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [
+              project.id,
+              project.title,
+              project.status,
+              project.updatedAt,
+              project.description || null,
+              project.category || null,
+              project.budgetPlanned ?? null,
+              activeCarId
+            ]
+          );
+        }
+      });
+    });
+  }, [projects, dbReady, activeCarId, isHydrating]);
+
+  useEffect(() => {
+    if (!dbReady || !dbRef.current || !activeCarId || isHydrating) return;
+    const db = dbRef.current;
+    enqueueWrite(async () => {
+      await db.withExclusiveTransactionAsync(async (tx: any) => {
+        await tx.runAsync('DELETE FROM project_media WHERE carId = ?', [activeCarId]);
+        for (const media of projectMedia) {
+          await tx.runAsync(
+            'INSERT OR REPLACE INTO project_media (id, projectId, uri, type, carId) VALUES (?, ?, ?, ?, ?)',
+            [media.id, media.projectId, media.uri, media.type, activeCarId]
+          );
+        }
+      });
+    });
+  }, [projectMedia, dbReady, activeCarId, isHydrating]);
+
+  useEffect(() => {
+    if (!dbReady || !dbRef.current || !activeCarId || isHydrating) return;
+    const db = dbRef.current;
+    enqueueWrite(async () => {
+      await db.withExclusiveTransactionAsync(async (tx: any) => {
+        await tx.runAsync('DELETE FROM log_media WHERE carId = ?', [activeCarId]);
+        for (const media of logMedia) {
+          await tx.runAsync(
+            'INSERT OR REPLACE INTO log_media (id, logId, uri, type, carId) VALUES (?, ?, ?, ?, ?)',
+            [media.id, media.logId, media.uri, media.type, activeCarId]
+          );
+        }
+      });
+    });
+  }, [logMedia, dbReady, activeCarId, isHydrating]);
 
   useEffect(() => {
     if (!dbReady || !dbRef.current) return;
@@ -640,10 +870,13 @@ export default function App() {
         await tx.runAsync('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ['appTheme', appTheme]);
         if (activeCarId) {
           await tx.runAsync('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ['activeCarId', String(activeCarId)]);
+          if (activeProjectId) {
+            await tx.runAsync('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ['activeProjectId', activeProjectId]);
+          }
         }
       });
     });
-  }, [units, appTheme, activeCarId, dbReady]);
+  }, [units, appTheme, activeCarId, activeProjectId, dbReady]);
 
   useEffect(() => {
     if (!dbReady || !dbRef.current || !activeCarId || isHydrating) return;
@@ -661,9 +894,11 @@ export default function App() {
     });
   }, [docs, dbReady, activeCarId, isHydrating]);
 
-  const openAddLog = () => {
+  const openAddLog = (projectId?: string | null) => {
     setEditingLog(null);
     setSelectedLogType('service');
+    setDraftProjectId(typeof projectId === 'undefined' ? activeProjectId : projectId);
+    setLogFormSeed(Date.now());
     setModals((prev) => ({ ...prev, addLog: true }));
   };
   const closeAddLog = () => {
@@ -674,7 +909,27 @@ export default function App() {
     }).start(({ finished }) => {
       if (finished) {
         setEditingLog(null);
+        setDraftProjectId(null);
         setModals((prev) => ({ ...prev, addLog: false }));
+      }
+    });
+  };
+
+  const openProjectDetail = (projectId: string) => {
+    setProjectDetailId(projectId);
+    setModals((prev) => ({ ...prev, projectDetail: true, projects: false }));
+  };
+  const closeProjectDetail = () => {
+    Animated.timing(projectDetailX, {
+      toValue: screenWidth,
+      duration: 220,
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) {
+        setProjectDetailId(null);
+        setProjectImageGrid({ projectId: null });
+        setProjectMediaViewer(null);
+        setModals((prev) => ({ ...prev, projectDetail: false }));
       }
     });
   };
@@ -755,12 +1010,13 @@ export default function App() {
           );
         } else {
           const insertResult = await db.runAsync(
-            `INSERT INTO car (plate, make, model, year, vin, nextEU, mileage, topSpeed, engineLiters, totalWeight, seats, fuelType)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO car (plate, make, model, nickname, year, vin, nextEU, mileage, topSpeed, engineLiters, totalWeight, seats, fuelType)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               data.plate,
               data.make,
               data.model,
+              null,
               data.year,
               data.vin,
               data.nextEU,
@@ -775,7 +1031,7 @@ export default function App() {
           carId = insertResult.lastInsertRowId;
         }
 
-        const savedCar: Car = { ...data, id: carId || Date.now() };
+        const savedCar: Car = { ...data, id: carId || Date.now(), nickname: null };
         setCars((prev) => {
           const next = prev.filter((c) => c.id !== savedCar.id);
           return [savedCar, ...next];
@@ -837,17 +1093,125 @@ export default function App() {
     setModals({ ...modals, mileage: false });
   };
 
+  const handleCreateProject = (title: string) => {
+    const clean = String(title || '').trim();
+    if (!clean || !activeCarId) return null;
+    const project: Project = {
+      id: `project-${Date.now()}`,
+      title: clean,
+      status: 'active',
+      updatedAt: Date.now(),
+      carId: activeCarId,
+      description: editingProject?.description || null,
+      category: editingProject?.category || null,
+      budgetPlanned: editingProject?.budgetPlanned ?? null
+    };
+    setProjects((prev) => [project, ...prev]);
+    setActiveProjectId(project.id);
+    setDraftProjectId(project.id);
+    setProjectDetailId(project.id);
+    return project;
+  };
+
+  const touchProject = (projectId: string | null | undefined) => {
+    if (!projectId) return;
+    setProjects((prev) => {
+      const next = [...prev];
+      const idx = next.findIndex((p) => p.id === projectId);
+      if (idx >= 0) {
+        next[idx] = { ...next[idx], updatedAt: Date.now() };
+        next.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      }
+      return next;
+    });
+    setActiveProjectId(projectId);
+  };
+
   const handleAddLog = (log: ServiceLog) => {
     // If mileage increased in log, update car
     if (car && log.mileage > car.mileage) {
       handleUpdateMileage(log.mileage); // This triggers the audit log too!
     }
+    touchProject(log.projectId);
     setLogs([log, ...logs]);
+  };
+
+  const addMediaToProject = async (projectId: string, source: 'camera' | 'library') => {
+    if (!activeCarId) return;
+    try {
+      const options: any = {
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.6,
+        allowsMultipleSelection: source === 'library',
+      };
+      let result;
+      if (source === 'camera') {
+        const perm = await ImagePicker.requestCameraPermissionsAsync();
+        if (!perm.granted) {
+          Alert.alert('Permission needed', 'Camera access is required to add photos.');
+          return;
+        }
+        result = await ImagePicker.launchCameraAsync(options);
+      } else {
+        result = await ImagePicker.launchImageLibraryAsync(options);
+      }
+      if (!result.canceled && result.assets?.length) {
+        setProjectMedia((prev) => [
+          ...result.assets.map((asset: any) => ({
+            id: `media-${Date.now()}-${asset.uri}`,
+            projectId,
+            uri: asset.uri,
+            type: 'image',
+            carId: activeCarId!
+          })),
+          ...prev
+        ]);
+      }
+    } catch (error) {
+      console.warn('Failed to add media', error);
+    }
+  };
+
+  const deleteProject = (projectId: string) => {
+    const project = projects.find((p) => p.id === projectId);
+    const name = project?.title || 'project';
+    Alert.alert('Delete project', `Are you sure you want to delete "${name}"?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => {
+          setProjects((prev) => prev.filter((p) => p.id !== projectId));
+          setProjectMedia((prev) => prev.filter((m) => m.projectId !== projectId));
+          setLogs((prev) => prev.map((l) => (l.projectId === projectId ? { ...l, projectId: null } : l)));
+          if (activeProjectId === projectId) setActiveProjectId(null);
+          closeProjectDetail();
+        }
+      }
+    ]);
+  };
+
+  const updateProjectStatus = (projectId: string, status: Project['status']) => {
+    setProjects((prev) =>
+      prev
+        .map((p) => (p.id === projectId ? { ...p, status, updatedAt: Date.now() } : p))
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    );
+  };
+
+  const handleSaveNickname = (value: string) => {
+    if (!car) return;
+    const nickname = value.trim();
+    const updated = { ...car, nickname };
+    setCar(updated);
+    setCars((prev) => prev.map((c) => (c.id === car.id ? { ...c, nickname } : c)));
   };
 
   const handleEditLog = (log: ServiceLog) => {
     setEditingLog(log);
     setSelectedLogType(log.type || 'service');
+    setLogFormSeed(Date.now());
+    setDraftProjectId(log.projectId || null);
     setModals((prev) => ({ ...prev, addLog: true }));
   };
 
@@ -859,6 +1223,7 @@ export default function App() {
         style: 'destructive',
         onPress: () => {
           setLogs((prev) => prev.filter((item) => item.id !== log.id));
+          setLogMedia((prev) => prev.filter((m) => m.logId !== log.id));
           if (editingLog?.id === log.id) {
             setEditingLog(null);
           }
@@ -882,6 +1247,9 @@ export default function App() {
               await tx.runAsync('DELETE FROM car WHERE id = ?', [removedId]);
               await tx.runAsync('DELETE FROM logs WHERE carId = ?', [removedId]);
               await tx.runAsync('DELETE FROM docs WHERE carId = ?', [removedId]);
+              await tx.runAsync('DELETE FROM projects WHERE carId = ?', [removedId]);
+              await tx.runAsync('DELETE FROM log_media WHERE carId = ?', [removedId]);
+              await tx.runAsync('DELETE FROM project_media WHERE carId = ?', [removedId]);
             });
           });
         }
@@ -892,6 +1260,9 @@ export default function App() {
           setIsHydrating(true);
           setCar(next);
           setActiveCarId(next.id);
+          setActiveProjectId(null);
+          setProjectMedia([]);
+          setLogMedia([]);
           setView('garage');
           pagerRef.current?.setPage(0);
         } else {
@@ -899,6 +1270,10 @@ export default function App() {
           setActiveCarId(null);
           setLogs([]);
           setDocs(DEFAULT_DOCS);
+          setProjects([]);
+          setActiveProjectId(null);
+          setProjectMedia([]);
+          setLogMedia([]);
           setView('onboarding');
         }
       } }
@@ -933,15 +1308,25 @@ export default function App() {
                     onViewAllLogs={() => navigateTo('logs')}
                     onEditLog={handleEditLog}
                     onDeleteLog={handleDeleteLog}
+                    onOpenLogPhotos={(logId: string) => setLogMediaGrid({ logId })}
+                    projects={projects}
+                    logMedia={logMedia}
                     units={units}
                   />
                 </View>
                 <View key="logs" style={{ flex: 1, backgroundColor: theme.bg }}>
                   <TimelineScreen
                     logs={logs}
+                    projects={projects}
+                    logMedia={logMedia}
                     onOpenLog={openAddLog}
+                    onShowProjects={() => setModals((prev) => ({ ...prev, projects: true }))}
+                    onStartProject={() => setModals((prev) => ({ ...prev, projectForm: true }))}
+                    onAddLogToProject={(projectId: string) => openAddLog(projectId)}
+                    onOpenProject={openProjectDetail}
                     onEditLog={handleEditLog}
                     onDeleteLog={handleDeleteLog}
+                    onOpenLogPhotos={(logId: string) => setLogMediaGrid({ logId })}
                     themeKey={resolvedTheme}
                     units={units}
                   />
@@ -958,6 +1343,7 @@ export default function App() {
                     appTheme={appTheme}
                     onChangeUnits={setUnits}
                     onChangeAppTheme={setAppTheme}
+                    onEditNickname={() => setModals((prev) => ({ ...prev, nickname: true }))}
                   />
                 </View>
               </PagerView>
@@ -980,12 +1366,25 @@ export default function App() {
                 <Animated.View style={[styles.addLogOverlay, { transform: [{ translateX: addLogX }] }]}>
                   <AddLogModal
                     onClose={closeAddLog}
-              onSave={(log: ServiceLog) => {
+              onSave={(log: ServiceLog, photos: string[]) => {
                 if (editingLog) {
                   setLogs((prev) => prev.map((item) => (item.id === log.id ? { ...item, ...log } : item)));
                 } else {
                   handleAddLog(log);
                 }
+                if (activeCarId) {
+                  setLogMedia((prev) => [
+                    ...prev.filter((m) => m.logId !== log.id),
+                    ...photos.map((uri) => ({
+                      id: `media-${Date.now()}-${uri}`,
+                      logId: log.id,
+                      uri,
+                      type: 'image',
+                      carId: activeCarId,
+                    }))
+                  ]);
+                }
+                touchProject(log.projectId);
                 closeAddLog();
                 setSelectedLogType('service');
               }}
@@ -995,6 +1394,25 @@ export default function App() {
               onManageTypes={openTypes}
               units={units}
               initialLog={editingLog}
+              projects={projects}
+              selectedProjectId={draftProjectId}
+              onSelectProject={setDraftProjectId}
+              onRequestNewProject={() => {
+                setEditingProject({
+                  id: '',
+                  title: '',
+                  status: 'active',
+                  updatedAt: Date.now(),
+                  carId: activeCarId || 0,
+                  description: null,
+                  category: null,
+                  budgetPlanned: null
+                });
+                setModals((prev) => ({ ...prev, projectForm: true, projects: false }));
+              }}
+              initialMediaUris={
+                editingLog ? logMedia.filter((m) => m.logId === editingLog.id).map((m) => m.uri) : []
+              }
             />
           </Animated.View>
         )}
@@ -1028,6 +1446,169 @@ export default function App() {
                   />
                 </Animated.View>
               )}
+              <ProjectsModal
+                visible={modals.projects}
+                projects={projects}
+                logs={logs}
+                onClose={() => setModals((prev) => ({ ...prev, projects: false }))}
+                onStartProject={() => setModals((prev) => ({ ...prev, projectForm: true, projects: false }))}
+                onAddLogToProject={(projectId: string) => {
+                  setModals((prev) => ({ ...prev, projects: false }));
+                  openAddLog(projectId);
+                }}
+                onOpenProject={openProjectDetail}
+                themeKey={resolvedTheme}
+              />
+              <ProjectFormModal
+                visible={modals.projectForm}
+                project={editingProject}
+                onClose={() => setModals((prev) => ({ ...prev, projectForm: false }))}
+                onSave={(proj: Partial<Project>) => {
+                  const cleanTitle = (proj.title || '').trim();
+                  if (!cleanTitle) return;
+                  const project: Project = {
+                    id: `project-${Date.now()}`,
+                    title: cleanTitle,
+                    status: 'active',
+                    updatedAt: Date.now(),
+                    carId: activeCarId || 0,
+                    description: (proj.description || '').trim() || null,
+                    category: (proj.category || '').trim() || null,
+                    budgetPlanned: proj.budgetPlanned ?? null
+                  };
+                  setProjects((prev) => [project, ...prev]);
+                  setDraftProjectId(project.id);
+                  openProjectDetail(project.id);
+                  setModals((prev) => ({ ...prev, projectForm: false }));
+                }}
+              />
+      {modals.projectDetail && projectDetailId && (
+        <Animated.View style={[styles.addLogOverlay, { transform: [{ translateX: projectDetailX }], zIndex: 25 }]}>
+          <ProjectDetailModal
+            project={projects.find((p) => p.id === projectDetailId)}
+            logs={logs.filter((l) => l.projectId === projectDetailId)}
+            media={projectMedia.filter((m) => m.projectId === projectDetailId)}
+            onClose={closeProjectDetail}
+            onAddLog={() => {
+              closeProjectDetail();
+              setTimeout(() => openAddLog(projectDetailId), 240);
+            }}
+            onAddImage={(source: 'camera' | 'library') => addMediaToProject(projectDetailId, source)}
+            onDelete={() => deleteProject(projectDetailId)}
+            onOpenImage={(media: ProjectMedia) => {
+              const combined = [
+                ...projectMedia.filter((m) => m.projectId === projectDetailId),
+                ...logMedia.filter((m) => logs.find((l) => l.id === m.logId && l.projectId === projectDetailId))
+              ];
+              const idx = combined.findIndex((m) => m.id === media.id);
+              setProjectMediaViewer({
+                projectId: projectDetailId,
+                media: combined,
+                index: idx >= 0 ? idx : 0
+              });
+            }}
+            onComplete={(projectId: string) => updateProjectStatus(projectId, 'done')}
+            onReopen={(projectId: string) => updateProjectStatus(projectId, 'active')}
+            units={units}
+            allLogMedia={logMedia.filter((m) => logs.some((l) => l.id === m.logId && l.projectId === projectDetailId))}
+            onOpenGrid={() => setProjectImageGrid({ projectId: projectDetailId })}
+          />
+        </Animated.View>
+      )}
+      {projectMediaViewer && (
+        <LogMediaViewer
+          media={projectMediaViewer.media.map((m) => ({ id: m.id, uri: m.uri }))}
+          startIndex={projectMediaViewer.index}
+          onClose={() => {
+            setProjectMediaViewer(null);
+            if (projectGridReturn) {
+              setProjectImageGrid({ projectId: projectGridReturn });
+              setProjectGridReturn(null);
+            }
+          }}
+          onDelete={(id: string) => {
+            Alert.alert('Delete photo', 'Are you sure you want to delete this photo?', [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Delete',
+                style: 'destructive',
+                onPress: () => {
+                  setProjectMedia((prev) => prev.filter((m) => m.id !== id));
+                  setProjectMediaViewer((prev) => {
+                    if (!prev) return null;
+                    const nextMedia = prev.media.filter((m) => m.id !== id);
+                    if (!nextMedia.length) return null;
+                    const nextIndex = Math.min(prev.index, nextMedia.length - 1);
+                    return { ...prev, media: nextMedia, index: nextIndex };
+                  });
+                }
+              }
+            ]);
+          }}
+        />
+      )}
+              {projectImageGrid.projectId && (
+                <ProjectMediaGrid
+                  media={[
+                    ...projectMedia.filter((m) => m.projectId === projectImageGrid.projectId),
+                    ...logMedia.filter(
+                      (m) => logs.find((l) => l.id === m.logId && l.projectId === projectImageGrid.projectId)
+                    )
+                  ]}
+                  onClose={() => setProjectImageGrid({ projectId: null })}
+                  onOpenFull={(index: number) => {
+                    const combined = [
+                      ...projectMedia.filter((m) => m.projectId === projectImageGrid.projectId),
+                      ...logMedia.filter((m) => logs.find((l) => l.id === m.logId && l.projectId === projectImageGrid.projectId))
+                    ];
+                    const selected = combined[index];
+                    if (selected) {
+                      setProjectGridReturn(projectImageGrid.projectId!);
+                      setProjectImageGrid({ projectId: null });
+                      setProjectMediaViewer({
+                        projectId: projectImageGrid.projectId!,
+                        media: combined,
+                        index
+                      });
+                    }
+                  }}
+                />
+              )}
+              {logMediaGrid.logId && (
+                <LogMediaGrid
+                  media={logMedia.filter((m) => m.logId === logMediaGrid.logId)}
+                  onClose={() => setLogMediaGrid({ logId: null })}
+                  onOpenFull={(index: number) => {
+                    setLogGridReturn(logMediaGrid.logId);
+                    setLogMediaGrid({ logId: null });
+                    setLogMediaViewer({ logId: logMediaGrid.logId, index });
+                  }}
+                />
+              )}
+              {logMediaViewer.logId && logMedia.filter((m) => m.logId === logMediaViewer.logId).length > 0 && (
+                <LogMediaViewer
+                  media={logMedia.filter((m) => m.logId === logMediaViewer.logId)}
+                  startIndex={logMediaViewer.index || 0}
+                  onClose={() => {
+                    setLogMediaViewer({ logId: null, index: 0 });
+                    if (logGridReturn) {
+                      setLogMediaGrid({ logId: logGridReturn });
+                      setLogGridReturn(null);
+                    }
+                  }}
+                />
+              )}
+              <SimpleInputModal
+                visible={modals.nickname}
+                title="Car Nickname"
+                placeholder={car?.nickname || 'My ride'}
+                keyboard="default"
+                onClose={() => setModals((prev) => ({ ...prev, nickname: false }))}
+                onSave={(val: string) => {
+                  handleSaveNickname(val);
+                  setModals((prev) => ({ ...prev, nickname: false }));
+                }}
+              />
               <SimpleInputModal
                 visible={modals.mileage}
                 title="Update Odometer"
@@ -1067,9 +1648,23 @@ export default function App() {
 
 // --- SCREENS ---
 
-const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, onEditLog, onDeleteLog, units }: any) => {
+const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, onEditLog, onDeleteLog, onOpenLogPhotos, units, projects, logMedia }: any) => {
   const { theme } = useTheme();
   const styles = useStyles();
+  const projectNameById = React.useMemo(() => {
+    const acc: Record<string, string> = {};
+    (projects || []).forEach((p: Project) => {
+      acc[p.id] = p.title;
+    });
+    return acc;
+  }, [projects]);
+  const logMediaCount = React.useMemo(() => {
+    const map: Record<string, number> = {};
+    (logMedia || []).forEach((m: LogMedia) => {
+      map[m.logId] = (map[m.logId] || 0) + 1;
+    });
+    return map;
+  }, [logMedia]);
   const safeCar = car ?? {};
   const nextEuRaw = safeCar.nextEU;
   const daysToEu = nextEuRaw
@@ -1107,6 +1702,7 @@ const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, onEd
             <Text style={styles.heroLogo}>LOGO</Text>
           )}
         </View>
+        {!!safeCar.nickname && <Text style={styles.heroNickname}>{safeCar.nickname}</Text>}
         <Text style={styles.heroModel}>{safeCar.model}</Text>
         <View style={styles.heroBottomRow}>
           <Text style={styles.heroLinePlate}>{safeCar.year}</Text>
@@ -1158,7 +1754,16 @@ const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, onEd
           <TouchableOpacity onPress={onViewAllLogs}><Text style={{color: theme.primary, fontWeight: '600'}}>View All</Text></TouchableOpacity>
         </View>
         {logs.slice(0,3).map((l: ServiceLog) => (
-          <LogRow key={l.id} log={l} units={units} onEdit={onEditLog} onDelete={onDeleteLog} />
+          <LogRow
+            key={l.id}
+            log={l}
+            units={units}
+            projectName={l.projectId ? projectNameById[l.projectId] : undefined}
+            photoCount={logMediaCount[l.id]}
+            onOpenPhotos={() => onOpenLogPhotos?.(l.id)}
+            onEdit={onEditLog}
+            onDelete={onDeleteLog}
+          />
         ))}
       </View>
 
@@ -1205,35 +1810,140 @@ const VaultScreen = ({ docs, themeKey }: { docs: Doc[]; themeKey: string }) => {
   );
 };
 
-const TimelineScreen = ({ logs, onOpenLog, onEditLog, onDeleteLog, themeKey, units }: { logs: ServiceLog[]; onOpenLog: () => void; onEditLog: (log: ServiceLog) => void; onDeleteLog: (log: ServiceLog) => void; themeKey: string; units: 'km' | 'mi' }) => {
+const TimelineScreen = ({
+  logs,
+  projects,
+  onOpenLog,
+  onShowProjects,
+  onStartProject,
+  onAddLogToProject,
+  onOpenProject,
+  onEditLog,
+  onDeleteLog,
+  onOpenLogPhotos,
+  logMedia,
+  themeKey,
+  units
+}: {
+  logs: ServiceLog[];
+  projects: Project[];
+  onOpenLog: () => void;
+  onShowProjects: () => void;
+  onStartProject: () => void;
+  onAddLogToProject: (id: string) => void;
+  onOpenProject: (id: string) => void;
+  onEditLog: (log: ServiceLog) => void;
+  onDeleteLog: (log: ServiceLog) => void;
+  onOpenLogPhotos: (id: string) => void;
+  logMedia: LogMedia[];
+  themeKey: string;
+  units: 'km' | 'mi';
+}) => {
   const { theme } = useTheme();
   const styles = useStyles();
+  const projectNameById = React.useMemo(() => {
+    const acc: Record<string, string> = {};
+    (projects || []).forEach((p: Project) => {
+      acc[p.id] = p.title;
+    });
+    return acc;
+  }, [projects]);
+  const logMediaCount = React.useMemo(() => {
+    const map: Record<string, number> = {};
+    (logMedia || []).forEach((m: LogMedia) => {
+      map[m.logId] = (map[m.logId] || 0) + 1;
+    });
+    return map;
+  }, [logMedia]);
+  const activeProjects = (projects || []).filter((p) => p.status !== 'done');
+  const latestProject = activeProjects[0];
+  const statsForProject = (projectId: string) => {
+    const projectLogs = logs.filter((l) => l.projectId === projectId);
+    const totalCost = projectLogs.reduce((sum, item) => sum + (item.cost || 0), 0);
+    return { count: projectLogs.length, cost: totalCost };
+  };
   return (
     <View style={styles.screenContainer}>
-    <View style={styles.pageHeaderRow}>
-      <View>
-        <Text style={styles.pageTitle}>Service Log</Text>
-        <Text style={styles.pageSub}>Track maintenance and expenses.</Text>
-      </View>
-      <TouchableOpacity style={styles.headerIconBtn} onPress={onOpenLog}>
-        <Ionicons name="add" size={20} color="white" />
-      </TouchableOpacity>
+      <FlatList
+        style={{ backgroundColor: theme.bg }}
+        data={logs}
+        extraData={themeKey}
+        keyExtractor={(l) => l.id}
+        contentContainerStyle={{ paddingBottom: 100 }}
+        ListHeaderComponent={
+          <View>
+            <View style={styles.pageHeaderRow}>
+              <View>
+                <Text style={styles.pageTitle}>Service Log</Text>
+                <Text style={styles.pageSub}>Track maintenance and expenses.</Text>
+              </View>
+              <TouchableOpacity style={styles.headerIconBtn} onPress={onOpenLog}>
+                <Ionicons name="add" size={20} color="white" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={[styles.projectCard, !latestProject && { paddingVertical: 12, paddingHorizontal: 16 }]}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <TouchableOpacity
+                  onPress={() => latestProject && onOpenProject(latestProject.id)}
+                  activeOpacity={latestProject ? 0.8 : 1}
+                  style={{ flex: 1 }}
+                >
+                  <Text style={styles.sectionTitle}>PROJECTS</Text>
+                  <Text style={styles.pageTitleSmall}>{latestProject ? latestProject.title : 'No projects yet'}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={onShowProjects} style={[styles.chip, { backgroundColor: theme.surface, borderColor: theme.cardBorder }]}>
+                  <Text style={{ color: theme.text }}>Show all</Text>
+                </TouchableOpacity>
+              </View>
+              {latestProject ? (
+                <View style={{ marginTop: 10 }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <Text style={styles.projectBadge}>{latestProject.status.toUpperCase()}</Text>
+                    <Text style={styles.projectMeta}>{new Date(latestProject.updatedAt).toLocaleDateString()}</Text>
+                  </View>
+                  <Text style={styles.projectStats}>
+                    {statsForProject(latestProject.id).count} logs • {statsForProject(latestProject.id).cost} kr
+                  </Text>
+                  <View style={{ flexDirection: 'row', marginTop: 12, gap: 10 }}>
+                    <TouchableOpacity
+                      style={[styles.primaryBtn, { flex: 1 }]}
+                      onPress={() => onAddLogToProject(latestProject.id)}
+                    >
+                      <Text style={styles.btnTxt}>Add log to project</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ) : (
+                <View style={{ marginTop: 6 }}>
+                  <Text style={{ color: theme.textDim, marginBottom: 6 }}>
+                    Start a project to group related work, like "Engine overhaul".
+                  </Text>
+                  <TouchableOpacity style={[styles.primaryBtn, { alignSelf: 'flex-start', paddingHorizontal: 14, paddingVertical: 10 }]} onPress={onStartProject}>
+                    <Text style={styles.btnTxt}>Start project</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+          </View>
+        }
+        renderItem={({ item }) => (
+          <LogRow
+            log={item}
+            units={units}
+            projectName={item.projectId ? projectNameById[item.projectId] : undefined}
+            photoCount={logMediaCount[item.id]}
+            onOpenPhotos={() => onOpenLogPhotos(item.id)}
+            onEdit={onEditLog}
+            onDelete={onDeleteLog}
+          />
+        )}
+      />
     </View>
-    <FlatList
-      style={{ backgroundColor: theme.bg }}
-      data={logs}
-      extraData={themeKey}
-      keyExtractor={l => l.id}
-      contentContainerStyle={{paddingBottom: 100}}
-      renderItem={({item}) => (
-        <LogRow log={item} units={units} onEdit={onEditLog} onDelete={onDeleteLog} />
-      )}
-    />
-  </View>
   );
 };
 
-const ConfigScreen = ({ car, onDelete, onChangeCar, units, appTheme, onChangeUnits, onChangeAppTheme }: any) => {
+const ConfigScreen = ({ car, onDelete, onChangeCar, units, appTheme, onChangeUnits, onChangeAppTheme, onEditNickname }: any) => {
   const { theme } = useTheme();
   const styles = useStyles();
   const safeCar = car ?? {};
@@ -1247,6 +1957,16 @@ const ConfigScreen = ({ car, onDelete, onChangeCar, units, appTheme, onChangeUni
         <Text style={styles.settingsLabel}>Plate Number</Text>
         <Text style={styles.settingsValue}>{safeCar.plate}</Text>
       </View>
+      <View style={styles.settingsDivider} />
+      <TouchableOpacity style={styles.settingsRow} onPress={onEditNickname}>
+        <Text style={styles.settingsLabel}>Nickname</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <Text style={[styles.settingsValue, !safeCar.nickname && { color: theme.textDim }]}>
+            {safeCar.nickname || 'Add nickname'}
+          </Text>
+          <Ionicons name="create-outline" size={18} color={theme.textDim} />
+        </View>
+      </TouchableOpacity>
       <View style={styles.settingsDivider} />
       <View style={styles.settingsRow}>
         <Text style={styles.settingsLabel}>VIN</Text>
@@ -1301,6 +2021,463 @@ const ConfigScreen = ({ car, onDelete, onChangeCar, units, appTheme, onChangeUni
 
 // --- COMPONENTS ---
 
+const ProjectsModal = ({
+  visible,
+  projects,
+  logs,
+  onClose,
+  onStartProject,
+  onAddLogToProject,
+  onOpenProject,
+  themeKey
+}: any) => {
+  const { theme } = useTheme();
+  const styles = useStyles();
+  const statsForProject = (projectId: string) => {
+    const projectLogs = logs.filter((l: ServiceLog) => l.projectId === projectId);
+    const totalCost = projectLogs.reduce((sum: number, item: ServiceLog) => sum + (item.cost || 0), 0);
+    return { count: projectLogs.length, cost: totalCost };
+  };
+
+  return (
+    <Modal visible={visible} transparent animationType="fade">
+      <View style={[styles.modalOverlay, { padding: 12, justifyContent: 'center', alignItems: 'center' }]}>
+        <View style={[styles.modalPopup, { width: '98%', maxHeight: '90%', padding: 16 }]}>
+          <View style={[styles.modalHeader, { paddingHorizontal: 0, paddingBottom: 8 }]}>
+            <TouchableOpacity onPress={onClose}>
+              <Text style={styles.modalCancelText}>Close</Text>
+            </TouchableOpacity>
+            <Text style={styles.modalH1}>Projects</Text>
+            <TouchableOpacity onPress={onStartProject}>
+              <Text style={styles.modalSaveText}>Create</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView contentContainerStyle={{ paddingVertical: 6, gap: 16 }}>
+            {projects.filter((p: Project) => p.status !== 'done').length === 0 &&
+             projects.filter((p: Project) => p.status === 'done').length === 0 ? (
+              <View style={{ padding: 12 }}>
+                <Text style={{ color: theme.textDim, marginBottom: 10 }}>
+                  No projects yet. Create one to group expenses.
+                </Text>
+                <TouchableOpacity style={[styles.primaryBtn]} onPress={onStartProject}>
+                  <Text style={styles.btnTxt}>Create project</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+
+            {projects.filter((p: Project) => p.status !== 'done').length > 0 && (
+              <View style={{ gap: 10 }}>
+                <Text style={styles.sectionHeader}>ACTIVE</Text>
+                {projects.filter((p: Project) => p.status !== 'done').map((item: Project) => {
+                  const stats = statsForProject(item.id);
+                  return (
+                    <TouchableOpacity
+                      key={item.id}
+                      onPress={() => onOpenProject(item.id)}
+                      style={[styles.projectListItem, { borderColor: theme.cardBorder, backgroundColor: theme.surface }]}>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.pageTitleSmall}>{item.title}</Text>
+                          <Text style={styles.projectMeta}>{item.status.toUpperCase()}</Text>
+                          <Text style={styles.projectStats}>{stats.count} logs • {stats.cost} kr</Text>
+                        </View>
+                        <TouchableOpacity onPress={() => onAddLogToProject(item.id)} style={[styles.chip, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+                          <Text style={{ color: theme.text }}>Add log</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
+
+            {projects.filter((p: Project) => p.status === 'done').length > 0 && (
+              <View style={{ gap: 10 }}>
+                <Text style={styles.sectionHeader}>FINISHED</Text>
+                {projects.filter((p: Project) => p.status === 'done').map((item: Project) => {
+                  const stats = statsForProject(item.id);
+                  return (
+                    <TouchableOpacity
+                      key={item.id}
+                      onPress={() => onOpenProject(item.id)}
+                      style={[styles.projectListItem, { borderColor: theme.cardBorder, backgroundColor: theme.surface }]}>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.pageTitleSmall}>{item.title}</Text>
+                          <Text style={styles.projectMeta}>{item.status.toUpperCase()}</Text>
+                          <Text style={styles.projectStats}>{stats.count} logs • {stats.cost} kr</Text>
+                        </View>
+                        <TouchableOpacity onPress={() => onAddLogToProject(item.id)} style={[styles.chip, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+                          <Text style={{ color: theme.text }}>Add log</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+};
+
+const ProjectDetailModal = ({
+  project,
+  logs,
+  media,
+  allLogMedia,
+  onClose,
+  onAddLog,
+  onAddImage,
+  onDelete,
+  onOpenImage,
+  onComplete,
+  onReopen,
+  onOpenGrid,
+  units
+}: any) => {
+  const { theme } = useTheme();
+  const styles = useStyles();
+  const insets = useSafeAreaInsets();
+  if (!project) return null;
+  return (
+    <View style={[styles.container, { backgroundColor: theme.bg, paddingTop: insets.top + 12 }]}>
+      <View style={styles.modalHeader}>
+        <TouchableOpacity onPress={onClose}>
+          <Ionicons name="close" size={22} color={theme.text} />
+        </TouchableOpacity>
+        <Text style={styles.modalH1}>{project.title}</Text>
+        <TouchableOpacity onPress={() => onDelete(project)}>
+          <Ionicons name="trash" size={20} color={theme.danger} />
+        </TouchableOpacity>
+      </View>
+      <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 120 }}>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
+          <Text style={styles.projectBadge}>{project.status.toUpperCase()}</Text>
+          <Text style={styles.projectMeta}>{new Date(project.updatedAt).toLocaleDateString()}</Text>
+        </View>
+        <Text style={styles.projectStats}>{logs.length} logs</Text>
+        <Text style={[styles.projectStats, { marginTop: 4 }]}>{logs.reduce((sum: number, l: ServiceLog) => sum + (l.cost || 0), 0)} kr total cost</Text>
+        {project.budgetPlanned ? (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }}>
+            <Ionicons name="wallet" size={14} color={theme.textDim} />
+            <Text style={styles.projectMeta}>
+              Planned {project.budgetPlanned} kr • Variance {(logs.reduce((sum: number, l: ServiceLog) => sum + (l.cost || 0), 0) - project.budgetPlanned)} kr
+            </Text>
+          </View>
+        ) : null}
+        {!!project.description && (
+          <View style={{ marginTop: 8 }}>
+            <Text style={styles.projectMeta}>{project.description}</Text>
+          </View>
+        )}
+        <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+          <TouchableOpacity style={[styles.primaryBtn, { flex: 1 }]} onPress={onAddLog}>
+            <Text style={styles.btnTxt}>Add log</Text>
+          </TouchableOpacity>
+          {project.status !== 'done' ? (
+            <TouchableOpacity
+              style={[styles.tagButton, { flex: 1, backgroundColor: theme.success, borderColor: theme.success }]}
+              onPress={() => onComplete(project.id)}>
+              <Text style={{ color: 'white', fontWeight: '700', textAlign: 'center' }}>Mark complete</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={[styles.tagButton, { flex: 1, backgroundColor: theme.warning, borderColor: theme.warning }]}
+              onPress={() => onReopen(project.id)}>
+              <Text style={{ color: 'white', fontWeight: '700', textAlign: 'center' }}>Reopen project</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        <Text style={[styles.sectionTitle, { marginTop: 18 }]}>Images</Text>
+        <View style={{ flexDirection: 'row', gap: 10, marginBottom: 12 }}>
+          <TouchableOpacity style={[styles.primaryBtn, { flex: 1 }]} onPress={() => onAddImage('library')}>
+            <Text style={styles.btnTxt}>Add photos</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.secondaryBtn, { flex: 1, borderColor: theme.cardBorder }]} onPress={onOpenGrid}>
+            <Text style={{ color: theme.text, textAlign: 'center' }}>View all</Text>
+          </TouchableOpacity>
+        </View>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
+          {[...media, ...allLogMedia].map((item: any) => (
+            <Pressable key={item.id} onPress={() => onOpenImage(item)}>
+              <ImageBackground
+                source={{ uri: item.uri }}
+                style={{ width: 120, height: 120 }}
+                imageStyle={{ borderRadius: 12 }}
+              />
+            </Pressable>
+          ))}
+          {![...media, ...allLogMedia].length && <Text style={{ color: theme.textDim }}>No images yet.</Text>}
+        </ScrollView>
+
+        <Text style={[styles.sectionTitle, { marginTop: 20 }]}>Logs</Text>
+        {logs.map((log: ServiceLog) => (
+          <View key={log.id} style={[styles.projectListItem, { borderColor: theme.cardBorder, backgroundColor: theme.surface }]}>
+            <Text style={styles.pageTitleSmall}>{log.title}</Text>
+            <Text style={styles.projectMeta}>{log.date}</Text>
+          <Text style={styles.projectStats}>{log.cost} kr • {log.mileage ? formatDistance(log.mileage, units) : ''}</Text>
+          {allLogMedia.filter((m: LogMedia) => m.logId === log.id).length > 0 && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, marginTop: 8 }}>
+              {allLogMedia
+                .filter((m: LogMedia) => m.logId === log.id)
+                .map((m: LogMedia) => (
+                  <ImageBackground
+                    key={m.id}
+                    source={{ uri: m.uri }}
+                    style={{ width: 64, height: 64 }}
+                    imageStyle={{ borderRadius: 10 }}
+                  />
+                ))}
+            </ScrollView>
+          )}
+        </View>
+      ))}
+      {!logs.length && <Text style={{ color: theme.textDim }}>No logs yet.</Text>}
+    </ScrollView>
+  </View>
+  );
+};
+
+const LogMediaViewer = ({
+  media,
+  startIndex,
+  onClose,
+  onDelete
+}: {
+  media: { id: string; uri: string }[];
+  startIndex: number;
+  onClose: () => void;
+  onDelete?: (id: string) => void;
+}) => {
+  const styles = useStyles();
+  const insets = useSafeAreaInsets();
+  const [index, setIndex] = useState(startIndex || 0);
+  const width = Dimensions.get('window').width;
+  const height = Dimensions.get('window').height;
+  return (
+    <Modal visible transparent>
+      <View style={styles.fullscreenOverlay}>
+        <View style={[styles.fullscreenHeader, { top: insets.top + 10 }]}>
+          <TouchableOpacity onPress={onClose}>
+            <Ionicons name="close" size={22} color="white" />
+          </TouchableOpacity>
+          <Text style={{ color: 'white', fontWeight: '600' }}>
+            {index + 1} / {media.length}
+          </Text>
+          {onDelete ? (
+            <TouchableOpacity onPress={() => onDelete(media[index]?.id)}>
+              <Ionicons name="trash" size={20} color="white" />
+            </TouchableOpacity>
+          ) : (
+            <View style={{ width: 22 }} />
+          )}
+        </View>
+        <FlatList
+          horizontal
+          pagingEnabled
+          data={media}
+          keyExtractor={(item) => item.id}
+          initialScrollIndex={startIndex || 0}
+          getItemLayout={(_, i) => ({ length: width, offset: width * i, index: i })}
+          onMomentumScrollEnd={(e) => {
+            const next = Math.round(e.nativeEvent.contentOffset.x / e.nativeEvent.layoutMeasurement.width);
+            setIndex(next);
+          }}
+          renderItem={({ item }) => (
+            <View style={{ width, height, justifyContent: 'center', alignItems: 'center' }}>
+              <ImageBackground
+                source={{ uri: item.uri }}
+                style={{ width: '100%', height: '100%' }}
+                imageStyle={{ resizeMode: 'contain' }}
+              />
+            </View>
+          )}
+        />
+      </View>
+    </Modal>
+  );
+};
+
+const LogMediaGrid = ({
+  media,
+  onClose,
+  onOpenFull
+}: {
+  media: LogMedia[];
+  onClose: () => void;
+  onOpenFull: (index: number) => void;
+}) => {
+  const styles = useStyles();
+  const insets = useSafeAreaInsets();
+  return (
+    <Modal visible transparent animationType="fade">
+      <View style={[styles.fullscreenOverlay, { paddingTop: insets.top + 20 }]}>
+        <View style={[styles.fullscreenHeader, { top: insets.top + 10 }]}>
+          <TouchableOpacity onPress={onClose}>
+            <Ionicons name="close" size={22} color="white" />
+          </TouchableOpacity>
+          <Text style={{ color: 'white', fontWeight: '600' }}>Photos</Text>
+          <View style={{ width: 22 }} />
+        </View>
+        <ScrollView contentContainerStyle={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, padding: 20, paddingTop: 60 }}>
+          {media.map((item, idx) => (
+            <Pressable key={item.id} onPress={() => onOpenFull(idx)}>
+              <ImageBackground
+                source={{ uri: item.uri }}
+                style={{ width: 120, height: 120 }}
+                imageStyle={{ borderRadius: 12 }}
+              />
+            </Pressable>
+          ))}
+        </ScrollView>
+      </View>
+    </Modal>
+  );
+};
+
+const ProjectFormModal = ({
+  visible,
+  project,
+  onClose,
+  onSave
+}: {
+  visible: boolean;
+  project: Project | null;
+  onClose: () => void;
+  onSave: (p: Partial<Project>) => void;
+}) => {
+  const { theme } = useTheme();
+  const styles = useStyles();
+  const [title, setTitle] = useState(project?.title || '');
+  const [description, setDescription] = useState(project?.description || '');
+  const [category, setCategory] = useState(project?.category || '');
+  const [budget, setBudget] = useState(project?.budgetPlanned ? String(project.budgetPlanned) : '');
+
+  useEffect(() => {
+    setTitle(project?.title || '');
+    setDescription(project?.description || '');
+    setCategory(project?.category || '');
+    setBudget(project?.budgetPlanned ? String(project.budgetPlanned) : '');
+  }, [project]);
+
+  return (
+    <Modal visible={visible} transparent animationType="fade">
+      <View style={styles.modalOverlay}>
+        <View style={[styles.modalPopup, { width: '92%' }]}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity onPress={onClose}>
+              <Text style={styles.modalCancelText}>Cancel</Text>
+            </TouchableOpacity>
+            <Text style={styles.modalH1}>New Project</Text>
+            <TouchableOpacity
+              onPress={() =>
+                onSave({
+                  title,
+                  description,
+                  category,
+                  budgetPlanned: budget ? Number(budget) : null
+                })
+              }>
+              <Text style={styles.modalSaveText}>Save</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView contentContainerStyle={{ gap: 14 }}>
+            <View style={styles.listGroup}>
+              <View style={styles.listRow}>
+                <Text style={styles.listLabel}>Title</Text>
+                <TextInput
+                  style={styles.listInput}
+                  placeholder="Engine overhaul"
+                  placeholderTextColor={theme.textDim}
+                  value={title}
+                  onChangeText={setTitle}
+                />
+              </View>
+              <View style={styles.listDivider} />
+              <View style={[styles.listRow, { alignItems: 'flex-start' }]}>
+                <Text style={styles.listLabel}>Notes</Text>
+                <TextInput
+                  style={[styles.listInput, { height: 80, textAlignVertical: 'top' }]}
+                  placeholder="Scope, parts, goals"
+                  placeholderTextColor={theme.textDim}
+                  value={description}
+                  onChangeText={setDescription}
+                  multiline
+                />
+              </View>
+              <View style={styles.listDivider} />
+              <View style={styles.listRow}>
+                <Text style={styles.listLabel}>Category</Text>
+                <TextInput
+                  style={styles.listInput}
+                  placeholder="Engine"
+                  placeholderTextColor={theme.textDim}
+                  value={category}
+                  onChangeText={setCategory}
+                />
+              </View>
+              <View style={styles.listDivider} />
+              <View style={styles.listRow}>
+                <Text style={styles.listLabel}>Planned</Text>
+                <TextInput
+                  style={styles.listInput}
+                  placeholder="0"
+                  placeholderTextColor={theme.textDim}
+                  keyboardType="numeric"
+                  value={budget}
+                  onChangeText={setBudget}
+                />
+                <Text style={[styles.listLabel, { width: 30, textAlign: 'right' }]}>kr</Text>
+              </View>
+            </View>
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+};
+
+const ProjectMediaGrid = ({
+  media,
+  onClose,
+  onOpenFull
+}: {
+  media: { id: string; uri: string }[];
+  onClose: () => void;
+  onOpenFull: (index: number) => void;
+}) => {
+  const styles = useStyles();
+  const insets = useSafeAreaInsets();
+  return (
+    <Modal visible transparent animationType="fade">
+      <View style={[styles.fullscreenOverlay, { paddingTop: insets.top + 20 }]}>
+        <View style={[styles.fullscreenHeader, { top: insets.top + 10 }]}>
+          <TouchableOpacity onPress={onClose}>
+            <Ionicons name="close" size={22} color="white" />
+          </TouchableOpacity>
+          <Text style={{ color: 'white', fontWeight: '600' }}>Project Photos</Text>
+          <View style={{ width: 22 }} />
+        </View>
+        <ScrollView contentContainerStyle={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, padding: 20, paddingTop: 60 }}>
+          {media.map((item, idx) => (
+            <Pressable key={item.id} onPress={() => onOpenFull(idx)}>
+              <ImageBackground
+                source={{ uri: item.uri }}
+                style={{ width: 120, height: 120 }}
+                imageStyle={{ borderRadius: 12 }}
+              />
+            </Pressable>
+          ))}
+        </ScrollView>
+      </View>
+    </Modal>
+  );
+};
+
 const SpecBox = ({ label, value, icon }: any) => {
   const { theme } = useTheme();
   const styles = useStyles();
@@ -1341,7 +2518,23 @@ const InfoTile = ({ label, value, sub, tone, icon, onPress }: any) => {
   );
 };
 
-const LogRow = ({ log, units, onEdit, onDelete }: { log: ServiceLog; units: 'km' | 'mi'; onEdit?: (log: ServiceLog) => void; onDelete?: (log: ServiceLog) => void }) => {
+const LogRow = ({
+  log,
+  units,
+  onEdit,
+  onDelete,
+  projectName,
+  photoCount,
+  onOpenPhotos
+}: {
+  log: ServiceLog;
+  units: 'km' | 'mi';
+  onEdit?: (log: ServiceLog) => void;
+  onDelete?: (log: ServiceLog) => void;
+  projectName?: string;
+  photoCount?: number;
+  onOpenPhotos?: () => void;
+}) => {
   const { theme } = useTheme();
   const styles = useStyles();
   const openActions = () => {
@@ -1366,7 +2559,7 @@ const LogRow = ({ log, units, onEdit, onDelete }: { log: ServiceLog; units: 'km'
   };
 
   return (
-    <Pressable onLongPress={openActions}>
+    <Pressable onLongPress={openActions} onPress={() => (photoCount ? onOpenPhotos?.() : undefined)}>
       <View style={styles.logRow}>
         <View style={styles.logTimelineLine} />
         <View style={[styles.logIconParams, { borderColor: log.isSystemEvent ? theme.textDim : theme.primary }]}>
@@ -1386,6 +2579,18 @@ const LogRow = ({ log, units, onEdit, onDelete }: { log: ServiceLog; units: 'km'
             <Text style={styles.logMeta}>{log.mileage > 0 ? formatDistance(log.mileage, units) : ''}</Text>
             {log.cost > 0 && <Text style={styles.logCost}>{log.cost} kr</Text>}
           </View>
+          {!!projectName && (
+            <View style={styles.projectPill}>
+              <Ionicons name="albums" size={12} color={theme.primary} />
+              <Text style={[styles.logMeta, { color: theme.primary }]}>{projectName}</Text>
+            </View>
+          )}
+          {!!photoCount && (
+            <View style={[styles.projectPill, { borderColor: theme.primary, backgroundColor: theme.surface, marginTop: 6 }]}>
+              <Ionicons name="image" size={12} color={theme.primary} />
+              <Text style={[styles.logMeta, { color: theme.primary }]}>{photoCount} photo{photoCount > 1 ? 's' : ''}</Text>
+            </View>
+          )}
         </View>
       </View>
     </Pressable>
@@ -1415,7 +2620,22 @@ const getTypeIconName = (type: string) => {
 
 // --- MODALS ---
 
-const AddLogModal = ({ onClose, onSave, mileagePlaceholder, logTypes, logType, onManageTypes, units, initialLog }: any) => {
+const AddLogModal = ({
+  onClose,
+  onSave,
+  mileagePlaceholder,
+  logTypes,
+  logType,
+  onManageTypes,
+  units,
+  initialLog,
+  projects,
+  selectedProjectId,
+  onSelectProject,
+  onRequestNewProject,
+  initialMediaUris,
+  formSeed
+}: any) => {
   const { theme } = useTheme();
   const styles = useStyles();
   const [title, setTitle] = useState('');
@@ -1424,6 +2644,10 @@ const AddLogModal = ({ onClose, onSave, mileagePlaceholder, logTypes, logType, o
   const [notes, setNotes] = useState('');
   const [logDate, setLogDate] = useState(new Date());
   const [showDatePicker, setShowDatePicker] = useState(false);
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [photos, setPhotos] = useState<string[]>([]);
+  const prevSeedRef = useRef<number | null>(null);
+  const prevLogIdRef = useRef<string | null>(null);
   const formatLogDate = (date: Date) =>
     date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
   const typeLabel = (value: LogType) =>
@@ -1431,12 +2655,20 @@ const AddLogModal = ({ onClose, onSave, mileagePlaceholder, logTypes, logType, o
   const availableTypes: LogType[] = logTypes?.length ? logTypes : ['service'];
 
   useEffect(() => {
+    const seedChanged = formSeed !== prevSeedRef.current;
+    const logChanged = (initialLog?.id || null) !== prevLogIdRef.current;
+    if (!seedChanged && !logChanged) return;
+    prevSeedRef.current = formSeed;
+    prevLogIdRef.current = initialLog?.id || null;
+
     if (!initialLog) {
       setTitle('');
       setCost('');
       setMileage('');
       setNotes('');
       setLogDate(new Date());
+      setProjectId(selectedProjectId || null);
+      setPhotos(initialMediaUris || []);
       return;
     }
     setTitle(initialLog.title || '');
@@ -1450,7 +2682,41 @@ const AddLogModal = ({ onClose, onSave, mileagePlaceholder, logTypes, logType, o
     setMileage(displayMileage ? String(displayMileage) : '');
     setNotes(initialLog.notes || '');
     setLogDate(initialLog.date ? new Date(initialLog.date) : new Date());
-  }, [initialLog, units]);
+    setProjectId(initialLog.projectId || null);
+    setPhotos(initialMediaUris || []);
+  }, [formSeed, initialLog, units, initialMediaUris, selectedProjectId]);
+
+  const projectLabel = () => {
+    if (!projectId) return 'None';
+    const match = projects?.find((p: Project) => p.id === projectId);
+    return match?.title || 'Project';
+  };
+
+  const pickPhotos = async (source: 'camera' | 'library') => {
+    try {
+      const options: any = {
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.6,
+        allowsMultipleSelection: source === 'library',
+      };
+      let result;
+      if (source === 'camera') {
+        const perm = await ImagePicker.requestCameraPermissionsAsync();
+        if (!perm.granted) {
+          Alert.alert('Permission needed', 'Camera access is required to add photos.');
+          return;
+        }
+        result = await ImagePicker.launchCameraAsync(options);
+      } else {
+        result = await ImagePicker.launchImageLibraryAsync(options);
+      }
+      if (!result.canceled && result.assets?.length) {
+        setPhotos((prev) => [...prev, ...result.assets.map((a: any) => a.uri)]);
+      }
+    } catch (error) {
+      console.warn('Photo pick failed', error);
+    }
+  };
 
   return (
     <View style={[styles.modalBase, { backgroundColor: theme.bg }]}>
@@ -1461,16 +2727,21 @@ const AddLogModal = ({ onClose, onSave, mileagePlaceholder, logTypes, logType, o
         <Text style={styles.modalH1}>{initialLog ? 'Edit Log' : 'New Log'}</Text>
         <TouchableOpacity
             onPress={() => {
-              onSave({
-                id: initialLog?.id || Date.now().toString(),
-                title: title || typeLabel(logType),
-                cost: parseInt(cost) || 0,
-                mileage: toKilometers(parseInt(mileage) || 0, units),
-                date: logDate.toISOString().split('T')[0],
-                type: logType,
-                notes,
-                isSystemEvent: initialLog?.isSystemEvent || false
-              });
+              onSelectProject?.(projectId || null);
+              onSave(
+                {
+                  id: initialLog?.id || Date.now().toString(),
+                  title: title || typeLabel(logType),
+                  cost: parseInt(cost) || 0,
+                  mileage: toKilometers(parseInt(mileage) || 0, units),
+                  date: logDate.toISOString().split('T')[0],
+                  type: logType,
+                  notes,
+                  projectId: projectId || null,
+                  isSystemEvent: initialLog?.isSystemEvent || false
+                },
+                photos
+              );
               setTitle('');
               setCost('');
               setNotes('');
@@ -1530,6 +2801,71 @@ const AddLogModal = ({ onClose, onSave, mileagePlaceholder, logTypes, logType, o
                 </Text>
               </View>
             </TouchableOpacity>
+            <View style={styles.listDivider} />
+            <View style={styles.listRow}>
+              <Text style={styles.listLabel}>Project</Text>
+              <View style={[styles.listValueRow, { flex: 1, justifyContent: 'flex-end' }]}>
+                <Text style={styles.listValue}>{projectLabel()}</Text>
+              </View>
+            </View>
+            <ScrollView
+              horizontal
+              contentContainerStyle={{ gap: 8, paddingVertical: 10 }}
+              showsHorizontalScrollIndicator={false}>
+              <TouchableOpacity
+                onPress={() => setProjectId(null)}
+                style={[
+                  styles.chip,
+                  { backgroundColor: projectId ? theme.surface : theme.primary, borderColor: theme.cardBorder }
+                ]}>
+                <Text style={{ color: projectId ? theme.text : 'white', fontWeight: '600' }}>None</Text>
+              </TouchableOpacity>
+              {(projects || []).map((p: Project) => (
+                <TouchableOpacity
+                  key={p.id}
+                  onPress={() => setProjectId(p.id)}
+                  style={[
+                    styles.chip,
+                    {
+                      backgroundColor: projectId === p.id ? theme.primary : theme.surface,
+                      borderColor: theme.cardBorder
+                    }
+                  ]}>
+                  <Text style={{ color: projectId === p.id ? 'white' : theme.text }}>{p.title}</Text>
+                </TouchableOpacity>
+              ))}
+              <TouchableOpacity
+                onPress={onRequestNewProject}
+                style={[styles.chip, { backgroundColor: theme.surface, borderColor: theme.primary }]}>
+                <Text style={{ color: theme.primary, fontWeight: '700' }}>+ New</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </View>
+
+        <View style={styles.formSection}>
+          <Text style={styles.sectionHeader}>Photos</Text>
+          <View style={[styles.listGroup, { padding: 12, gap: 10 }]}>
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              <TouchableOpacity style={[styles.secondaryBtn, { flex: 1, borderColor: theme.cardBorder }]} onPress={() => pickPhotos('library')}>
+                <Text style={{ color: theme.text, textAlign: 'center' }}>Add from library</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.secondaryBtn, { flex: 1, borderColor: theme.cardBorder }]} onPress={() => pickPhotos('camera')}>
+                <Text style={{ color: theme.text, textAlign: 'center' }}>Use camera</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
+              {photos.map((uri: string) => (
+                <Pressable key={uri} onLongPress={() => setPhotos((prev) => prev.filter((p) => p !== uri))}>
+                  <ImageBackground
+                    source={{ uri }}
+                    style={{ width: 90, height: 90 }}
+                    imageStyle={{ borderRadius: 10 }}
+                  />
+                </Pressable>
+              ))}
+              {!photos.length && <Text style={{ color: theme.textDim }}>No photos attached.</Text>}
+            </ScrollView>
           </View>
         </View>
 
@@ -1714,7 +3050,7 @@ const Onboarding = ({ onRegister, cars, onSelectCar }: any) => {
                           )}
                         </View>
                         <View style={{ flex: 1 }}>
-                          <Text style={styles.onboardingRowTitle}>{item.make} {item.model}</Text>
+                          <Text style={styles.onboardingRowTitle}>{item.nickname || `${item.make} ${item.model}`}</Text>
                           <Text style={styles.onboardingRowSub}>{String(item.plate || '').replace(/\s+/g, '')}</Text>
                         </View>
                         <Ionicons name="chevron-forward" size={18} color={theme.textDim} />
@@ -1778,6 +3114,7 @@ const createStyles = (theme: typeof LIGHT_THEME) => StyleSheet.create({
   headerPill: { backgroundColor: theme.primary, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, flexDirection: 'row', alignItems: 'center', gap: 6 },
   headerPillText: { color: 'white', fontWeight: '600', fontSize: 12 },
   heroTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  heroNickname: { color: theme.textDim, fontStyle: 'italic', marginTop: 4 },
   heroBottomRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 10 },
   heroBrand: { color: theme.primary, fontWeight: '600', letterSpacing: 0.6, textTransform: 'uppercase', fontSize: 16 },
   heroModel: { fontSize: 24, fontWeight: '700', color: theme.text, marginTop: -2 },
@@ -1794,6 +3131,17 @@ const createStyles = (theme: typeof LIGHT_THEME) => StyleSheet.create({
   // Sections
   section: { marginBottom: 24, paddingHorizontal: 20 },
   sectionTitle: { color: theme.textDim, fontSize: 12, fontWeight: '700', marginBottom: 12, letterSpacing: 0.4 },
+  projectCard: { backgroundColor: theme.card, borderRadius: 16, borderWidth: 1, borderColor: theme.cardBorder, padding: 16, marginBottom: 20 },
+  projectBadge: { color: theme.textDim, fontSize: 10, fontWeight: '700', letterSpacing: 0.4 },
+  projectMeta: { color: theme.textDim, fontSize: 12 },
+  projectStats: { color: theme.text, fontWeight: '600', marginTop: 4 },
+  tagButton: { padding: 12, borderRadius: 12, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  projectListItem: { padding: 14, borderRadius: 14, borderWidth: 1, marginHorizontal: 16, marginBottom: 10 },
+  projectPill: { marginTop: 8, alignSelf: 'flex-start', flexDirection: 'row', gap: 6, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.cardBorder },
+  chip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, borderWidth: 1 },
+  fullscreenOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'center', alignItems: 'center' },
+  fullscreenHeader: { position: 'absolute', top: 40, left: 20, right: 20, flexDirection: 'row', justifyContent: 'space-between', zIndex: 2 },
+  fullscreenImage: { width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center' },
   
   // Grid
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
@@ -1837,6 +3185,8 @@ const createStyles = (theme: typeof LIGHT_THEME) => StyleSheet.create({
   input: { backgroundColor: theme.card, color: theme.text, padding: 16, borderRadius: 12, marginBottom: 16, borderWidth: 1, borderColor: theme.cardBorder },
   inpLabel: { color: theme.textDim, fontSize: 11, fontWeight: '600', marginBottom: 8 },
   mainBtn: { backgroundColor: theme.primary, padding: 16, borderRadius: 14, alignItems: 'center' },
+  primaryBtn: { backgroundColor: theme.primary, padding: 12, borderRadius: 12, alignItems: 'center' },
+  secondaryBtn: { backgroundColor: theme.surface, padding: 12, borderRadius: 12, alignItems: 'center', borderWidth: 1 },
   btnTxt: { fontWeight: '600', color: 'white' },
   
   // Vault
@@ -1848,6 +3198,7 @@ const createStyles = (theme: typeof LIGHT_THEME) => StyleSheet.create({
 
   // Config
   pageTitle: { fontSize: 28, fontWeight: '700', color: theme.text, marginBottom: 4 },
+  pageTitleSmall: { fontSize: 18, fontWeight: '700', color: theme.text },
   pageSub: { color: theme.textDim, marginBottom: 0 },
   pageHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 },
   headerIconBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: theme.primary, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 6, shadowOffset: { width: 0, height: 3 }, elevation: 3 },

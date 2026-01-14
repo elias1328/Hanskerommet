@@ -3,3 +3,4 @@ node_modules/
 .expo/
 dist/
 .env
+expo-env.d.ts
