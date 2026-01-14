@@ -984,61 +984,12 @@ export default function App() {
   const handleRegister = async (plate: string) => {
     try {
       const data = await fetchCarDetails(plate);
-        if (dbReady && dbRef.current) {
-          const db = dbRef.current;
-          const existing = await db.getFirstAsync<any>('SELECT id FROM car WHERE plate = ?', [
-            data.plate
-          ]);
+      if (dbReady && dbRef.current) {
+        const db = dbRef.current;
+        const existing = await db.getFirstAsync<any>('SELECT id FROM car WHERE plate = ?', [
+          data.plate
+        ]);
         let carId = existing?.id ? Number(existing.id) : null;
-        if (carId) {
-          await db.runAsync(
-            `UPDATE car SET make = ?, model = ?, year = ?, vin = ?, nextEU = ?, mileage = ?, topSpeed = ?, engineLiters = ?, totalWeight = ?, seats = ?, fuelType = ? WHERE id = ?`,
-            [
-              data.make,
-              data.model,
-              data.year,
-              data.vin,
-              data.nextEU,
-              data.mileage,
-              data.topSpeed,
-              data.engineLiters,
-              data.totalWeight,
-              data.seats,
-              data.fuelType,
-              carId
-            ]
-          );
-        } else {
-          const insertResult = await db.runAsync(
-            `INSERT INTO car (plate, make, model, nickname, year, vin, nextEU, mileage, topSpeed, engineLiters, totalWeight, seats, fuelType)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              data.plate,
-              data.make,
-              data.model,
-              null,
-              data.year,
-              data.vin,
-              data.nextEU,
-              data.mileage,
-              data.topSpeed,
-              data.engineLiters,
-              data.totalWeight,
-              data.seats,
-              data.fuelType
-            ]
-          );
-          carId = insertResult.lastInsertRowId;
-        }
-
-        const savedCar: Car = { ...data, id: carId || Date.now(), nickname: null };
-        setCars((prev) => {
-          const next = prev.filter((c) => c.id !== savedCar.id);
-          return [savedCar, ...next];
-        });
-        setCar(savedCar);
-        setActiveCarId(savedCar.id);
-
         const initLog: ServiceLog = {
           id: Date.now().toString(),
           title: 'Car Added to Glovebox',
@@ -1049,20 +1000,74 @@ export default function App() {
           notes: 'Vehicle imported via Statens Vegvesen API.',
           isSystemEvent: true
         };
-        await db.runAsync(
-          'INSERT OR REPLACE INTO logs (id, title, date, mileage, cost, type, notes, isSystemEvent, carId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [
-            initLog.id,
-            initLog.title,
-            initLog.date,
-            initLog.mileage,
-            initLog.cost,
-            initLog.type,
-            initLog.notes,
-            initLog.isSystemEvent ? 1 : 0,
-            savedCar.id
-          ]
-        );
+
+        await enqueueWrite(async () => {
+          await db.withExclusiveTransactionAsync(async (tx: any) => {
+            if (carId) {
+              await tx.runAsync(
+                `UPDATE car SET make = ?, model = ?, year = ?, vin = ?, nextEU = ?, mileage = ?, topSpeed = ?, engineLiters = ?, totalWeight = ?, seats = ?, fuelType = ? WHERE id = ?`,
+                [
+                  data.make,
+                  data.model,
+                  data.year,
+                  data.vin,
+                  data.nextEU,
+                  data.mileage,
+                  data.topSpeed,
+                  data.engineLiters,
+                  data.totalWeight,
+                  data.seats,
+                  data.fuelType,
+                  carId
+                ]
+              );
+            } else {
+              const insertResult = await tx.runAsync(
+                `INSERT INTO car (plate, make, model, nickname, year, vin, nextEU, mileage, topSpeed, engineLiters, totalWeight, seats, fuelType)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                  data.plate,
+                  data.make,
+                  data.model,
+                  null,
+                  data.year,
+                  data.vin,
+                  data.nextEU,
+                  data.mileage,
+                  data.topSpeed,
+                  data.engineLiters,
+                  data.totalWeight,
+                  data.seats,
+                  data.fuelType
+                ]
+              );
+              carId = insertResult.lastInsertRowId;
+            }
+
+            await tx.runAsync(
+              'INSERT OR REPLACE INTO logs (id, title, date, mileage, cost, type, notes, isSystemEvent, carId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+              [
+                initLog.id,
+                initLog.title,
+                initLog.date,
+                initLog.mileage,
+                initLog.cost,
+                initLog.type,
+                initLog.notes,
+                initLog.isSystemEvent ? 1 : 0,
+                carId
+              ]
+            );
+          });
+        });
+
+        const savedCar: Car = { ...data, id: carId || Date.now(), nickname: null };
+        setCars((prev) => {
+          const next = prev.filter((c) => c.id !== savedCar.id);
+          return [savedCar, ...next];
+        });
+        setCar(savedCar);
+        setActiveCarId(savedCar.id);
         setLogs([initLog]);
         setIsHydrating(true);
         setView('garage');
