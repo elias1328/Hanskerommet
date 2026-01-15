@@ -268,7 +268,7 @@ export default function App() {
   const dbRef = useRef<any>(null);
   const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
   const settingsProjectIdRef = useRef<string | null>(null);
-  const tabKeys = ['garage', 'logs', 'vault', 'config'] as const;
+  const tabKeys = ['garage', 'logs', 'projects', 'vault'] as const;
   const screenWidth = Dimensions.get('window').width;
   const appX = useRef(new Animated.Value(screenWidth)).current;
   const onboardingX = useRef(new Animated.Value(0)).current;
@@ -897,7 +897,7 @@ export default function App() {
   const openAddLog = (projectId?: string | null) => {
     setEditingLog(null);
     setSelectedLogType('service');
-    setDraftProjectId(typeof projectId === 'undefined' ? activeProjectId : projectId);
+    setDraftProjectId(typeof projectId === 'undefined' ? null : projectId);
     setLogFormSeed(Date.now());
     setModals((prev) => ({ ...prev, addLog: true }));
   };
@@ -973,7 +973,13 @@ export default function App() {
     setModals((prev) => ({ ...prev, mileage: true }));
   };
 
-  const navigateTo = (nextView: 'garage' | 'vault' | 'logs' | 'config') => {
+  const openSettings = () => setView('config');
+
+  const navigateTo = (nextView: 'garage' | 'vault' | 'logs' | 'projects' | 'config') => {
+    if (nextView === 'config') {
+      setView('config');
+      return;
+    }
     setView(nextView);
     const nextIndex = tabKeys.indexOf(nextView);
     if (nextIndex >= 0) {
@@ -1317,6 +1323,7 @@ export default function App() {
                     projects={projects}
                     logMedia={logMedia}
                     units={units}
+                    onOpenSettings={openSettings}
                   />
                 </View>
                 <View key="logs" style={{ flex: 1, backgroundColor: theme.bg }}>
@@ -1325,10 +1332,6 @@ export default function App() {
                     projects={projects}
                     logMedia={logMedia}
                     onOpenLog={openAddLog}
-                    onShowProjects={() => setModals((prev) => ({ ...prev, projects: true }))}
-                    onStartProject={() => setModals((prev) => ({ ...prev, projectForm: true }))}
-                    onAddLogToProject={(projectId: string) => openAddLog(projectId)}
-                    onOpenProject={openProjectDetail}
                     onEditLog={handleEditLog}
                     onDeleteLog={handleDeleteLog}
                     onOpenLogPhotos={(logId: string) => setLogMediaGrid({ logId })}
@@ -1336,10 +1339,22 @@ export default function App() {
                     units={units}
                   />
                 </View>
+                <View key="projects" style={{ flex: 1, backgroundColor: theme.bg }}>
+                  <ProjectsScreen
+                    logs={logs}
+                    projects={projects}
+                    onStartProject={() => setModals((prev) => ({ ...prev, projectForm: true }))}
+                    onAddLogToProject={(projectId: string) => openAddLog(projectId)}
+                    onOpenProject={openProjectDetail}
+                  />
+                </View>
                 <View key="vault" style={{ flex: 1, backgroundColor: theme.bg }}>
                   <VaultScreen docs={docs} themeKey={resolvedTheme} />
                 </View>
-                <View key="config" style={{ flex: 1, backgroundColor: theme.bg }}>
+              </PagerView>
+
+              {view === 'config' && (
+                <View style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, backgroundColor: theme.bg }}>
                   <ConfigScreen
                     car={car!}
                     onDelete={deleteCar}
@@ -1351,7 +1366,7 @@ export default function App() {
                     onEditNickname={() => setModals((prev) => ({ ...prev, nickname: true }))}
                   />
                 </View>
-              </PagerView>
+              )}
 
               {/* --- CUSTOM TAB BAR (Perfectly Centered FAB) --- */}
               <View style={[styles.tabBarContainer, { height: 49 + insets.bottom }]}>
@@ -1359,8 +1374,8 @@ export default function App() {
                   <View style={styles.tabBarContent}>
                     <TabBtn icon="car-sport" label="Garage" active={view === 'garage'} onPress={() => navigateTo('garage')} />
                     <TabBtn icon="document-text" label="Logs" active={view === 'logs'} onPress={() => navigateTo('logs')} />
+                    <TabBtn icon="layers" label="Projects" active={view === 'projects'} onPress={() => navigateTo('projects')} />
                     <TabBtn icon="file-tray-full" label="Vault" active={view === 'vault'} onPress={() => navigateTo('vault')} />
-                    <TabBtn icon="settings" label="Config" active={view === 'config'} onPress={() => navigateTo('config')} />
                   </View>
                 </BlurView>
 
@@ -1371,56 +1386,56 @@ export default function App() {
                 <Animated.View style={[styles.addLogOverlay, { transform: [{ translateX: addLogX }] }]}>
                   <AddLogModal
                     onClose={closeAddLog}
-              onSave={(log: ServiceLog, photos: string[]) => {
-                if (editingLog) {
-                  setLogs((prev) => prev.map((item) => (item.id === log.id ? { ...item, ...log } : item)));
-                } else {
-                  handleAddLog(log);
-                }
-                if (activeCarId) {
-                  setLogMedia((prev) => [
-                    ...prev.filter((m) => m.logId !== log.id),
-                    ...photos.map((uri) => ({
-                      id: `media-${Date.now()}-${uri}`,
-                      logId: log.id,
-                      uri,
-                      type: 'image',
-                      carId: activeCarId,
-                    }))
-                  ]);
-                }
-                touchProject(log.projectId);
-                closeAddLog();
-                setSelectedLogType('service');
-              }}
-              mileagePlaceholder={car ? formatDistance(car.mileage, units).replace(/\\s?(km|mi)$/, '') : 'Auto'}
-              logTypes={logTypes}
-              logType={selectedLogType}
-              onManageTypes={openTypes}
-              units={units}
-              initialLog={editingLog}
-              projects={projects}
-              selectedProjectId={draftProjectId}
-              onSelectProject={setDraftProjectId}
-              onRequestNewProject={() => {
-                setEditingProject({
-                  id: '',
-                  title: '',
-                  status: 'active',
-                  updatedAt: Date.now(),
-                  carId: activeCarId || 0,
-                  description: null,
-                  category: null,
-                  budgetPlanned: null
-                });
-                setModals((prev) => ({ ...prev, projectForm: true, projects: false }));
-              }}
-              initialMediaUris={
-                editingLog ? logMedia.filter((m) => m.logId === editingLog.id).map((m) => m.uri) : []
-              }
-            />
-          </Animated.View>
-        )}
+                    onSave={(log: ServiceLog, photos: string[]) => {
+                      if (editingLog) {
+                        setLogs((prev) => prev.map((item) => (item.id === log.id ? { ...item, ...log } : item)));
+                      } else {
+                        handleAddLog(log);
+                      }
+                      if (activeCarId) {
+                        setLogMedia((prev) => [
+                          ...prev.filter((m) => m.logId !== log.id),
+                          ...photos.map((uri) => ({
+                            id: `media-${Date.now()}-${uri}`,
+                            logId: log.id,
+                            uri,
+                            type: 'image',
+                            carId: activeCarId,
+                          }))
+                        ]);
+                      }
+                      touchProject(log.projectId);
+                      closeAddLog();
+                      setSelectedLogType('service');
+                    }}
+                    mileagePlaceholder={car ? formatDistance(car.mileage, units).replace(/\s?(km|mi)$/, '') : 'Auto'}
+                    logTypes={logTypes}
+                    logType={selectedLogType}
+                    onManageTypes={openTypes}
+                    units={units}
+                    initialLog={editingLog}
+                    projects={projects}
+                    selectedProjectId={draftProjectId}
+                    onSelectProject={setDraftProjectId}
+                    onRequestNewProject={() => {
+                      setEditingProject({
+                        id: '',
+                        title: '',
+                        status: 'active',
+                        updatedAt: Date.now(),
+                        carId: activeCarId || 0,
+                        description: null,
+                        category: null,
+                        budgetPlanned: null
+                      });
+                      setModals((prev) => ({ ...prev, projectForm: true, projects: false }));
+                    }}
+                    initialMediaUris={
+                      editingLog ? logMedia.filter((m) => m.logId === editingLog.id).map((m) => m.uri) : []
+                    }
+                  />
+                </Animated.View>
+              )}
               {modals.types && (
                 <Animated.View style={[styles.addLogOverlay, { transform: [{ translateX: typesX }] }]}>
                   <TypesPage
@@ -1451,19 +1466,6 @@ export default function App() {
                   />
                 </Animated.View>
               )}
-              <ProjectsModal
-                visible={modals.projects}
-                projects={projects}
-                logs={logs}
-                onClose={() => setModals((prev) => ({ ...prev, projects: false }))}
-                onStartProject={() => setModals((prev) => ({ ...prev, projectForm: true, projects: false }))}
-                onAddLogToProject={(projectId: string) => {
-                  setModals((prev) => ({ ...prev, projects: false }));
-                  openAddLog(projectId);
-                }}
-                onOpenProject={openProjectDetail}
-                themeKey={resolvedTheme}
-              />
               <ProjectFormModal
                 visible={modals.projectForm}
                 project={editingProject}
@@ -1487,71 +1489,71 @@ export default function App() {
                   setModals((prev) => ({ ...prev, projectForm: false }));
                 }}
               />
-      {modals.projectDetail && projectDetailId && (
-        <Animated.View style={[styles.addLogOverlay, { transform: [{ translateX: projectDetailX }], zIndex: 25 }]}>
-          <ProjectDetailModal
-            project={projects.find((p) => p.id === projectDetailId)}
-            logs={logs.filter((l) => l.projectId === projectDetailId)}
-            media={projectMedia.filter((m) => m.projectId === projectDetailId)}
-            onClose={closeProjectDetail}
-            onAddLog={() => {
-              closeProjectDetail();
-              setTimeout(() => openAddLog(projectDetailId), 240);
-            }}
-            onAddImage={(source: 'camera' | 'library') => addMediaToProject(projectDetailId, source)}
-            onDelete={() => deleteProject(projectDetailId)}
-            onOpenImage={(media: ProjectMedia) => {
-              const combined = [
-                ...projectMedia.filter((m) => m.projectId === projectDetailId),
-                ...logMedia.filter((m) => logs.find((l) => l.id === m.logId && l.projectId === projectDetailId))
-              ];
-              const idx = combined.findIndex((m) => m.id === media.id);
-              setProjectMediaViewer({
-                projectId: projectDetailId,
-                media: combined,
-                index: idx >= 0 ? idx : 0
-              });
-            }}
-            onComplete={(projectId: string) => updateProjectStatus(projectId, 'done')}
-            onReopen={(projectId: string) => updateProjectStatus(projectId, 'active')}
-            units={units}
-            allLogMedia={logMedia.filter((m) => logs.some((l) => l.id === m.logId && l.projectId === projectDetailId))}
-            onOpenGrid={() => setProjectImageGrid({ projectId: projectDetailId })}
-          />
-        </Animated.View>
-      )}
-      {projectMediaViewer && (
-        <LogMediaViewer
-          media={projectMediaViewer.media.map((m) => ({ id: m.id, uri: m.uri }))}
-          startIndex={projectMediaViewer.index}
-          onClose={() => {
-            setProjectMediaViewer(null);
-            if (projectGridReturn) {
-              setProjectImageGrid({ projectId: projectGridReturn });
-              setProjectGridReturn(null);
-            }
-          }}
-          onDelete={(id: string) => {
-            Alert.alert('Delete photo', 'Are you sure you want to delete this photo?', [
-              { text: 'Cancel', style: 'cancel' },
-              {
-                text: 'Delete',
-                style: 'destructive',
-                onPress: () => {
-                  setProjectMedia((prev) => prev.filter((m) => m.id !== id));
-                  setProjectMediaViewer((prev) => {
-                    if (!prev) return null;
-                    const nextMedia = prev.media.filter((m) => m.id !== id);
-                    if (!nextMedia.length) return null;
-                    const nextIndex = Math.min(prev.index, nextMedia.length - 1);
-                    return { ...prev, media: nextMedia, index: nextIndex };
-                  });
-                }
-              }
-            ]);
-          }}
-        />
-      )}
+              {modals.projectDetail && projectDetailId && (
+                <Animated.View style={[styles.addLogOverlay, { transform: [{ translateX: projectDetailX }], zIndex: 25 }]}>
+                  <ProjectDetailModal
+                    project={projects.find((p) => p.id === projectDetailId)}
+                    logs={logs.filter((l) => l.projectId === projectDetailId)}
+                    media={projectMedia.filter((m) => m.projectId === projectDetailId)}
+                    onClose={closeProjectDetail}
+                    onAddLog={() => {
+                      closeProjectDetail();
+                      setTimeout(() => openAddLog(projectDetailId), 240);
+                    }}
+                    onAddImage={(source: 'camera' | 'library') => addMediaToProject(projectDetailId, source)}
+                    onDelete={() => deleteProject(projectDetailId)}
+                    onOpenImage={(media: ProjectMedia) => {
+                      const combined = [
+                        ...projectMedia.filter((m) => m.projectId === projectDetailId),
+                        ...logMedia.filter((m) => logs.find((l) => l.id === m.logId && l.projectId === projectDetailId))
+                      ];
+                      const idx = combined.findIndex((m) => m.id === media.id);
+                      setProjectMediaViewer({
+                        projectId: projectDetailId,
+                        media: combined,
+                        index: idx >= 0 ? idx : 0
+                      });
+                    }}
+                    onComplete={(projectId: string) => updateProjectStatus(projectId, 'done')}
+                    onReopen={(projectId: string) => updateProjectStatus(projectId, 'active')}
+                    units={units}
+                    allLogMedia={logMedia.filter((m) => logs.some((l) => l.id === m.logId && l.projectId === projectDetailId))}
+                    onOpenGrid={() => setProjectImageGrid({ projectId: projectDetailId })}
+                  />
+                </Animated.View>
+              )}
+              {projectMediaViewer && (
+                <LogMediaViewer
+                  media={projectMediaViewer.media.map((m) => ({ id: m.id, uri: m.uri }))}
+                  startIndex={projectMediaViewer.index}
+                  onClose={() => {
+                    setProjectMediaViewer(null);
+                    if (projectGridReturn) {
+                      setProjectImageGrid({ projectId: projectGridReturn });
+                      setProjectGridReturn(null);
+                    }
+                  }}
+                  onDelete={(id: string) => {
+                    Alert.alert('Delete photo', 'Are you sure you want to delete this photo?', [
+                      { text: 'Cancel', style: 'cancel' },
+                      {
+                        text: 'Delete',
+                        style: 'destructive',
+                        onPress: () => {
+                          setProjectMedia((prev) => prev.filter((m) => m.id !== id));
+                          setProjectMediaViewer((prev) => {
+                            if (!prev) return null;
+                            const nextMedia = prev.media.filter((m) => m.id !== id);
+                            if (!nextMedia.length) return null;
+                            const nextIndex = Math.min(prev.index, nextMedia.length - 1);
+                            return { ...prev, media: nextMedia, index: nextIndex };
+                          });
+                        }
+                      }
+                    ]);
+                  }}
+                />
+              )}
               {projectImageGrid.projectId && (
                 <ProjectMediaGrid
                   media={[
@@ -1653,7 +1655,7 @@ export default function App() {
 
 // --- SCREENS ---
 
-const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, onEditLog, onDeleteLog, onOpenLogPhotos, units, projects, logMedia }: any) => {
+const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, onEditLog, onDeleteLog, onOpenLogPhotos, units, projects, logMedia, onOpenSettings }: any) => {
   const { theme } = useTheme();
   const styles = useStyles();
   const projectNameById = React.useMemo(() => {
@@ -1689,10 +1691,15 @@ const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, onEd
         <View>
           <Text style={styles.headerTitle}>Glovebox</Text>
         </View>
-        <TouchableOpacity style={styles.headerPill} onPress={onOpenLog}>
-          <Ionicons name="add" size={16} color="white" />
-          <Text style={styles.headerPillText}>Quick log</Text>
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <TouchableOpacity style={styles.headerPill} onPress={onOpenLog}>
+            <Ionicons name="add" size={16} color="white" />
+            <Text style={styles.headerPillText}>Quick log</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.headerIconBtn, { marginLeft: 8 }]} onPress={onOpenSettings}>
+            <Ionicons name="settings" size={20} color="white" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Hero Card */}
@@ -1819,24 +1826,16 @@ const TimelineScreen = ({
   logs,
   projects,
   onOpenLog,
-  onShowProjects,
-  onStartProject,
-  onAddLogToProject,
-  onOpenProject,
   onEditLog,
   onDeleteLog,
   onOpenLogPhotos,
   logMedia,
   themeKey,
-  units
+  units,
 }: {
   logs: ServiceLog[];
   projects: Project[];
   onOpenLog: () => void;
-  onShowProjects: () => void;
-  onStartProject: () => void;
-  onAddLogToProject: (id: string) => void;
-  onOpenProject: (id: string) => void;
   onEditLog: (log: ServiceLog) => void;
   onDeleteLog: (log: ServiceLog) => void;
   onOpenLogPhotos: (id: string) => void;
@@ -1860,18 +1859,12 @@ const TimelineScreen = ({
     });
     return map;
   }, [logMedia]);
-  const activeProjects = (projects || []).filter((p) => p.status !== 'done');
-  const latestProject = activeProjects[0];
-  const statsForProject = (projectId: string) => {
-    const projectLogs = logs.filter((l) => l.projectId === projectId);
-    const totalCost = projectLogs.reduce((sum, item) => sum + (item.cost || 0), 0);
-    return { count: projectLogs.length, cost: totalCost };
-  };
+  const globalLogs = logs.filter((l) => !l.projectId);
   return (
     <View style={styles.screenContainer}>
       <FlatList
         style={{ backgroundColor: theme.bg }}
-        data={logs}
+        data={globalLogs}
         extraData={themeKey}
         keyExtractor={(l) => l.id}
         contentContainerStyle={{ paddingBottom: 100 }}
@@ -1887,48 +1880,8 @@ const TimelineScreen = ({
               </TouchableOpacity>
             </View>
 
-            <View style={[styles.projectCard, !latestProject && { paddingVertical: 12, paddingHorizontal: 16 }]}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                <TouchableOpacity
-                  onPress={() => latestProject && onOpenProject(latestProject.id)}
-                  activeOpacity={latestProject ? 0.8 : 1}
-                  style={{ flex: 1 }}
-                >
-                  <Text style={styles.sectionTitle}>PROJECTS</Text>
-                  <Text style={styles.pageTitleSmall}>{latestProject ? latestProject.title : 'No projects yet'}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={onShowProjects} style={[styles.chip, { backgroundColor: theme.surface, borderColor: theme.cardBorder }]}>
-                  <Text style={{ color: theme.text }}>Show all</Text>
-                </TouchableOpacity>
-              </View>
-              {latestProject ? (
-                <View style={{ marginTop: 10 }}>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
-                    <Text style={styles.projectBadge}>{latestProject.status.toUpperCase()}</Text>
-                    <Text style={styles.projectMeta}>{new Date(latestProject.updatedAt).toLocaleDateString()}</Text>
-                  </View>
-                  <Text style={styles.projectStats}>
-                    {statsForProject(latestProject.id).count} logs • {statsForProject(latestProject.id).cost} kr
-                  </Text>
-                  <View style={{ flexDirection: 'row', marginTop: 12, gap: 10 }}>
-                    <TouchableOpacity
-                      style={[styles.primaryBtn, { flex: 1 }]}
-                      onPress={() => onAddLogToProject(latestProject.id)}
-                    >
-                      <Text style={styles.btnTxt}>Add log to project</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              ) : (
-                <View style={{ marginTop: 6 }}>
-                  <Text style={{ color: theme.textDim, marginBottom: 6 }}>
-                    Start a project to group related work, like "Engine overhaul".
-                  </Text>
-                  <TouchableOpacity style={[styles.primaryBtn, { alignSelf: 'flex-start', paddingHorizontal: 14, paddingVertical: 10 }]} onPress={onStartProject}>
-                    <Text style={styles.btnTxt}>Start project</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
+            <View style={{ marginBottom: 12 }}>
+              <Text style={styles.sectionTitle}>GLOBAL LOGS</Text>
             </View>
           </View>
         }
@@ -1945,6 +1898,94 @@ const TimelineScreen = ({
         )}
       />
     </View>
+  );
+};
+
+const ProjectsScreen = ({
+  logs,
+  projects,
+  onStartProject,
+  onAddLogToProject,
+  onOpenProject,
+}: {
+  logs: ServiceLog[];
+  projects: Project[];
+  onStartProject: () => void;
+  onAddLogToProject: (id: string) => void;
+  onOpenProject: (id: string) => void;
+}) => {
+  const { theme } = useTheme();
+  const styles = useStyles();
+  const activeProjects = (projects || []).filter((p) => p.status !== 'done');
+  const completedProjects = (projects || []).filter((p) => p.status === 'done');
+  const statsForProject = (projectId: string) => {
+    const projectLogs = logs.filter((l) => l.projectId === projectId);
+    const totalCost = projectLogs.reduce((sum, item) => sum + (item.cost || 0), 0);
+    return { count: projectLogs.length, cost: totalCost };
+  };
+  return (
+    <ScrollView style={{ flex: 1, backgroundColor: theme.bg }} contentContainerStyle={{ paddingBottom: 120 }}>
+      <View style={styles.pageHeaderRow}>
+        <View>
+          <Text style={styles.pageTitle}>Projects</Text>
+          <Text style={styles.pageSub}>Group work into focused timelines.</Text>
+        </View>
+        <TouchableOpacity style={styles.headerIconBtn} onPress={onStartProject}>
+          <Ionicons name="add" size={20} color="white" />
+        </TouchableOpacity>
+      </View>
+
+      {(activeProjects.length === 0 && completedProjects.length === 0) && (
+        <View style={[styles.projectListItem, { borderColor: theme.cardBorder, backgroundColor: theme.surface }]}>
+          <Text style={styles.pageTitleSmall}>No projects yet</Text>
+          <Text style={styles.projectMeta}>Create one to track related work.</Text>
+        </View>
+      )}
+
+      {activeProjects.map((item) => {
+        const stats = statsForProject(item.id);
+        return (
+          <TouchableOpacity
+            key={item.id}
+            onPress={() => onOpenProject(item.id)}
+            style={[styles.projectListItem, { borderColor: theme.cardBorder, backgroundColor: theme.surface }]}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+              <Text style={styles.pageTitleSmall}>{item.title}</Text>
+              <Text style={styles.projectMeta}>{new Date(item.updatedAt).toLocaleDateString()}</Text>
+            </View>
+            <Text style={styles.projectStats}>{stats.count} logs | {stats.cost} kr</Text>
+            <View style={{ flexDirection: 'row', marginTop: 10, gap: 8 }}>
+              <Text style={styles.projectBadge}>{item.status.toUpperCase()}</Text>
+              <TouchableOpacity onPress={() => onAddLogToProject(item.id)} style={[styles.chip, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+                <Text style={{ color: theme.text }}>Add log</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        );
+      })}
+
+      {!!completedProjects.length && (
+        <View style={{ marginTop: 12 }}>
+          <Text style={styles.sectionTitle}>COMPLETED</Text>
+          {completedProjects.map((item) => {
+            const stats = statsForProject(item.id);
+            return (
+              <TouchableOpacity
+                key={item.id}
+                onPress={() => onOpenProject(item.id)}
+                style={[styles.projectListItem, { borderColor: theme.cardBorder, backgroundColor: theme.surface }]}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <Text style={styles.pageTitleSmall}>{item.title}</Text>
+                  <Text style={styles.projectMeta}>{new Date(item.updatedAt).toLocaleDateString()}</Text>
+                </View>
+                <Text style={styles.projectStats}>{stats.count} logs | {stats.cost} kr</Text>
+                <Text style={styles.projectBadge}>{item.status.toUpperCase()}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      )}
+    </ScrollView>
   );
 };
 
@@ -2025,108 +2066,6 @@ const ConfigScreen = ({ car, onDelete, onChangeCar, units, appTheme, onChangeUni
 };
 
 // --- COMPONENTS ---
-
-const ProjectsModal = ({
-  visible,
-  projects,
-  logs,
-  onClose,
-  onStartProject,
-  onAddLogToProject,
-  onOpenProject,
-  themeKey
-}: any) => {
-  const { theme } = useTheme();
-  const styles = useStyles();
-  const statsForProject = (projectId: string) => {
-    const projectLogs = logs.filter((l: ServiceLog) => l.projectId === projectId);
-    const totalCost = projectLogs.reduce((sum: number, item: ServiceLog) => sum + (item.cost || 0), 0);
-    return { count: projectLogs.length, cost: totalCost };
-  };
-
-  return (
-    <Modal visible={visible} transparent animationType="fade">
-      <View style={[styles.modalOverlay, { padding: 12, justifyContent: 'center', alignItems: 'center' }]}>
-        <View style={[styles.modalPopup, { width: '98%', maxHeight: '90%', padding: 16 }]}>
-          <View style={[styles.modalHeader, { paddingHorizontal: 0, paddingBottom: 8 }]}>
-            <TouchableOpacity onPress={onClose}>
-              <Text style={styles.modalCancelText}>Close</Text>
-            </TouchableOpacity>
-            <Text style={styles.modalH1}>Projects</Text>
-            <TouchableOpacity onPress={onStartProject}>
-              <Text style={styles.modalSaveText}>Create</Text>
-            </TouchableOpacity>
-          </View>
-          <ScrollView contentContainerStyle={{ paddingVertical: 6, gap: 16 }}>
-            {projects.filter((p: Project) => p.status !== 'done').length === 0 &&
-             projects.filter((p: Project) => p.status === 'done').length === 0 ? (
-              <View style={{ padding: 12 }}>
-                <Text style={{ color: theme.textDim, marginBottom: 10 }}>
-                  No projects yet. Create one to group expenses.
-                </Text>
-                <TouchableOpacity style={[styles.primaryBtn]} onPress={onStartProject}>
-                  <Text style={styles.btnTxt}>Create project</Text>
-                </TouchableOpacity>
-              </View>
-            ) : null}
-
-            {projects.filter((p: Project) => p.status !== 'done').length > 0 && (
-              <View style={{ gap: 10 }}>
-                <Text style={styles.sectionHeader}>ACTIVE</Text>
-                {projects.filter((p: Project) => p.status !== 'done').map((item: Project) => {
-                  const stats = statsForProject(item.id);
-                  return (
-                    <TouchableOpacity
-                      key={item.id}
-                      onPress={() => onOpenProject(item.id)}
-                      style={[styles.projectListItem, { borderColor: theme.cardBorder, backgroundColor: theme.surface }]}>
-                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.pageTitleSmall}>{item.title}</Text>
-                          <Text style={styles.projectMeta}>{item.status.toUpperCase()}</Text>
-                          <Text style={styles.projectStats}>{stats.count} logs • {stats.cost} kr</Text>
-                        </View>
-                        <TouchableOpacity onPress={() => onAddLogToProject(item.id)} style={[styles.chip, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-                          <Text style={{ color: theme.text }}>Add log</Text>
-                        </TouchableOpacity>
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            )}
-
-            {projects.filter((p: Project) => p.status === 'done').length > 0 && (
-              <View style={{ gap: 10 }}>
-                <Text style={styles.sectionHeader}>FINISHED</Text>
-                {projects.filter((p: Project) => p.status === 'done').map((item: Project) => {
-                  const stats = statsForProject(item.id);
-                  return (
-                    <TouchableOpacity
-                      key={item.id}
-                      onPress={() => onOpenProject(item.id)}
-                      style={[styles.projectListItem, { borderColor: theme.cardBorder, backgroundColor: theme.surface }]}>
-                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.pageTitleSmall}>{item.title}</Text>
-                          <Text style={styles.projectMeta}>{item.status.toUpperCase()}</Text>
-                          <Text style={styles.projectStats}>{stats.count} logs • {stats.cost} kr</Text>
-                        </View>
-                        <TouchableOpacity onPress={() => onAddLogToProject(item.id)} style={[styles.chip, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-                          <Text style={{ color: theme.text }}>Add log</Text>
-                        </TouchableOpacity>
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            )}
-          </ScrollView>
-        </View>
-      </View>
-    </Modal>
-  );
-};
 
 const ProjectDetailModal = ({
   project,
