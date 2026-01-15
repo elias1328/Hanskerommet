@@ -276,6 +276,9 @@ export default function App() {
   const addLogX = useRef(new Animated.Value(screenWidth)).current;
   const typesX = useRef(new Animated.Value(screenWidth)).current;
   const projectDetailX = useRef(new Animated.Value(screenWidth)).current;
+  const projectFormX = useRef(new Animated.Value(screenWidth)).current;
+  const settingsX = useRef(new Animated.Value(screenWidth)).current;
+  const settingsPrevRef = useRef<'garage' | 'logs' | 'projects' | 'vault'>('garage');
   const [view, setView] = useState<'onboarding' | 'garage' | 'vault' | 'logs' | 'config'>('onboarding');
   const [cars, setCars] = useState<Car[]>([]);
   const [car, setCar] = useState<Car | null>(null);
@@ -973,7 +976,46 @@ export default function App() {
     setModals((prev) => ({ ...prev, mileage: true }));
   };
 
-  const openSettings = () => setView('config');
+  const openSettings = () => {
+    settingsPrevRef.current = view === 'config' ? settingsPrevRef.current : view;
+    setView('config');
+    settingsX.setValue(screenWidth);
+    Animated.timing(settingsX, {
+      toValue: 0,
+      duration: 260,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const closeSettings = () => {
+    Animated.timing(settingsX, {
+      toValue: screenWidth,
+      duration: 220,
+      useNativeDriver: true,
+    }).start(() => {
+      setView(settingsPrevRef.current);
+    });
+  };
+
+  const openProjectForm = () => {
+    projectFormX.setValue(screenWidth);
+    setModals((prev) => ({ ...prev, projectForm: true }));
+    Animated.timing(projectFormX, {
+      toValue: 0,
+      duration: 260,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const closeProjectForm = () => {
+    Animated.timing(projectFormX, {
+      toValue: screenWidth,
+      duration: 220,
+      useNativeDriver: true,
+    }).start(() => {
+      setModals((prev) => ({ ...prev, projectForm: false }));
+    });
+  };
 
   const navigateTo = (nextView: 'garage' | 'vault' | 'logs' | 'projects' | 'config') => {
     if (nextView === 'config') {
@@ -1343,7 +1385,7 @@ export default function App() {
                   <ProjectsScreen
                     logs={logs}
                     projects={projects}
-                    onStartProject={() => setModals((prev) => ({ ...prev, projectForm: true }))}
+                    onStartProject={openProjectForm}
                     onAddLogToProject={(projectId: string) => openAddLog(projectId)}
                     onOpenProject={openProjectDetail}
                   />
@@ -1354,7 +1396,7 @@ export default function App() {
               </PagerView>
 
               {view === 'config' && (
-                <View style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, backgroundColor: theme.bg }}>
+                <Animated.View style={[styles.container, { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, backgroundColor: theme.bg, transform: [{ translateX: settingsX }] }]}>
                   <ConfigScreen
                     car={car!}
                     onDelete={deleteCar}
@@ -1364,8 +1406,9 @@ export default function App() {
                     onChangeUnits={setUnits}
                     onChangeAppTheme={setAppTheme}
                     onEditNickname={() => setModals((prev) => ({ ...prev, nickname: true }))}
+                    onClose={closeSettings}
                   />
-                </View>
+                </Animated.View>
               )}
 
               {/* --- CUSTOM TAB BAR (Perfectly Centered FAB) --- */}
@@ -1428,7 +1471,7 @@ export default function App() {
                         category: null,
                         budgetPlanned: null
                       });
-                      setModals((prev) => ({ ...prev, projectForm: true, projects: false }));
+                      openProjectForm();
                     }}
                     initialMediaUris={
                       editingLog ? logMedia.filter((m) => m.logId === editingLog.id).map((m) => m.uri) : []
@@ -1466,29 +1509,33 @@ export default function App() {
                   />
                 </Animated.View>
               )}
-              <ProjectFormModal
-                visible={modals.projectForm}
-                project={editingProject}
-                onClose={() => setModals((prev) => ({ ...prev, projectForm: false }))}
-                onSave={(proj: Partial<Project>) => {
-                  const cleanTitle = (proj.title || '').trim();
-                  if (!cleanTitle) return;
-                  const project: Project = {
-                    id: `project-${Date.now()}`,
-                    title: cleanTitle,
-                    status: 'active',
-                    updatedAt: Date.now(),
-                    carId: activeCarId || 0,
-                    description: (proj.description || '').trim() || null,
-                    category: (proj.category || '').trim() || null,
-                    budgetPlanned: proj.budgetPlanned ?? null
-                  };
-                  setProjects((prev) => [project, ...prev]);
-                  setDraftProjectId(project.id);
-                  openProjectDetail(project.id);
-                  setModals((prev) => ({ ...prev, projectForm: false }));
-                }}
-              />
+              {modals.projectForm && (
+                <Animated.View style={[styles.addLogOverlay, { transform: [{ translateX: projectFormX }] }]}>
+                  <ProjectFormModal
+                    visible={modals.projectForm}
+                    project={editingProject}
+                    onClose={closeProjectForm}
+                    onSave={(proj: Partial<Project>) => {
+                      const cleanTitle = (proj.title || '').trim();
+                      if (!cleanTitle) return;
+                      const project: Project = {
+                        id: `project-${Date.now()}`,
+                        title: cleanTitle,
+                        status: 'active',
+                        updatedAt: Date.now(),
+                        carId: activeCarId || 0,
+                        description: (proj.description || '').trim() || null,
+                        category: (proj.category || '').trim() || null,
+                        budgetPlanned: proj.budgetPlanned ?? null
+                      };
+                      setProjects((prev) => [project, ...prev]);
+                      setDraftProjectId(project.id);
+                      openProjectDetail(project.id);
+                      closeProjectForm();
+                    }}
+                  />
+                </Animated.View>
+              )}
               {modals.projectDetail && projectDetailId && (
                 <Animated.View style={[styles.addLogOverlay, { transform: [{ translateX: projectDetailX }], zIndex: 25 }]}>
                   <ProjectDetailModal
@@ -1696,8 +1743,8 @@ const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, onEd
             <Ionicons name="add" size={16} color="white" />
             <Text style={styles.headerPillText}>Quick log</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.headerIconBtn, { marginLeft: 8 }]} onPress={onOpenSettings}>
-            <Ionicons name="settings" size={20} color="white" />
+          <TouchableOpacity style={[styles.headerIconBtnGhost, { marginLeft: 8 }]} onPress={onOpenSettings}>
+            <Ionicons name="settings" size={20} color={theme.textDim} />
           </TouchableOpacity>
         </View>
       </View>
@@ -1924,7 +1971,10 @@ const ProjectsScreen = ({
     return { count: projectLogs.length, cost: totalCost };
   };
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: theme.bg }} contentContainerStyle={{ paddingBottom: 120 }}>
+    <ScrollView
+      style={{ flex: 1, backgroundColor: theme.bg }}
+      contentContainerStyle={{ paddingBottom: 120, paddingHorizontal: 20, paddingTop: 20 }}
+    >
       <View style={styles.pageHeaderRow}>
         <View>
           <Text style={styles.pageTitle}>Projects</Text>
@@ -1936,7 +1986,7 @@ const ProjectsScreen = ({
       </View>
 
       {(activeProjects.length === 0 && completedProjects.length === 0) && (
-        <View style={[styles.projectListItem, { borderColor: theme.cardBorder, backgroundColor: theme.surface }]}>
+        <View style={styles.projectListItem}>
           <Text style={styles.pageTitleSmall}>No projects yet</Text>
           <Text style={styles.projectMeta}>Create one to track related work.</Text>
         </View>
@@ -1944,21 +1994,29 @@ const ProjectsScreen = ({
 
       {activeProjects.map((item) => {
         const stats = statsForProject(item.id);
+        const statusTone = item.status === 'done' ? theme.success : theme.primary;
         return (
           <TouchableOpacity
             key={item.id}
             onPress={() => onOpenProject(item.id)}
-            style={[styles.projectListItem, { borderColor: theme.cardBorder, backgroundColor: theme.surface }]}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
-              <Text style={styles.pageTitleSmall}>{item.title}</Text>
-              <Text style={styles.projectMeta}>{new Date(item.updatedAt).toLocaleDateString()}</Text>
-            </View>
-            <Text style={styles.projectStats}>{stats.count} logs | {stats.cost} kr</Text>
-            <View style={{ flexDirection: 'row', marginTop: 10, gap: 8 }}>
-              <Text style={styles.projectBadge}>{item.status.toUpperCase()}</Text>
-              <TouchableOpacity onPress={() => onAddLogToProject(item.id)} style={[styles.chip, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-                <Text style={{ color: theme.text }}>Add log</Text>
-              </TouchableOpacity>
+            style={styles.projectListItem}>
+            <View style={styles.projectRow}>
+              <View style={[styles.projectStatusStrip, { backgroundColor: statusTone }]} />
+              <View style={styles.projectContent}>
+                <View style={styles.projectTopRow}>
+                  <Text style={styles.pageTitleSmall}>{item.title}</Text>
+                  <Text style={styles.projectMeta}>{new Date(item.updatedAt).toLocaleDateString()}</Text>
+                </View>
+                <View style={styles.projectBottomRow}>
+                  <View>
+                    <Text style={styles.projectStats}>
+                      {stats.count ? `${stats.count} logs` : 'No logs yet'}
+                    </Text>
+                    <Text style={styles.projectStats}>{stats.cost} kr</Text>
+                  </View>
+                  <Text style={styles.projectBadge}>{item.status.toUpperCase()}</Text>
+                </View>
+              </View>
             </View>
           </TouchableOpacity>
         );
@@ -1969,17 +2027,30 @@ const ProjectsScreen = ({
           <Text style={styles.sectionTitle}>COMPLETED</Text>
           {completedProjects.map((item) => {
             const stats = statsForProject(item.id);
+            const statusTone = item.status === 'done' ? theme.success : theme.primary;
             return (
               <TouchableOpacity
                 key={item.id}
                 onPress={() => onOpenProject(item.id)}
-                style={[styles.projectListItem, { borderColor: theme.cardBorder, backgroundColor: theme.surface }]}>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
-                  <Text style={styles.pageTitleSmall}>{item.title}</Text>
-                  <Text style={styles.projectMeta}>{new Date(item.updatedAt).toLocaleDateString()}</Text>
+                style={styles.projectListItem}>
+                <View style={styles.projectRow}>
+                  <View style={[styles.projectStatusStrip, { backgroundColor: statusTone }]} />
+                  <View style={styles.projectContent}>
+                    <View style={styles.projectTopRow}>
+                      <Text style={styles.pageTitleSmall}>{item.title}</Text>
+                      <Text style={styles.projectMeta}>{new Date(item.updatedAt).toLocaleDateString()}</Text>
+                    </View>
+                    <View style={styles.projectBottomRow}>
+                      <View>
+                        <Text style={styles.projectStats}>
+                          {stats.count ? `${stats.count} logs` : 'No logs yet'}
+                        </Text>
+                        <Text style={styles.projectStats}>{stats.cost} kr</Text>
+                      </View>
+                      <Text style={styles.projectBadge}>{item.status.toUpperCase()}</Text>
+                    </View>
+                  </View>
                 </View>
-                <Text style={styles.projectStats}>{stats.count} logs | {stats.cost} kr</Text>
-                <Text style={styles.projectBadge}>{item.status.toUpperCase()}</Text>
               </TouchableOpacity>
             );
           })}
@@ -1989,15 +2060,24 @@ const ProjectsScreen = ({
   );
 };
 
-const ConfigScreen = ({ car, onDelete, onChangeCar, units, appTheme, onChangeUnits, onChangeAppTheme, onEditNickname }: any) => {
+const ConfigScreen = ({ car, onDelete, onChangeCar, units, appTheme, onChangeUnits, onChangeAppTheme, onEditNickname, onClose }: any) => {
   const { theme } = useTheme();
   const styles = useStyles();
   const safeCar = car ?? {};
   return (
-    <View style={styles.screenContainer}>
-    <Text style={styles.pageTitle}>Settings</Text>
-    
-    <Text style={styles.settingsHeader}>VEHICLE</Text>
+    <SafeAreaView style={{ flex: 1, backgroundColor: theme.bg }}>
+      <ScrollView contentContainerStyle={{ paddingBottom: 120, paddingHorizontal: 16, paddingTop: 12 }}>
+        <View style={[styles.pageHeaderRow, { paddingHorizontal: 0 }]}>
+          <TouchableOpacity style={styles.headerIconBtn} onPress={onClose}>
+            <Ionicons name="chevron-back" size={20} color="white" />
+          </TouchableOpacity>
+          <View style={{ flex: 1, alignItems: 'center' }}>
+            <Text style={styles.pageTitle}>Settings</Text>
+          </View>
+          <View style={{ width: 36 }} />
+        </View>
+
+        <Text style={styles.settingsHeader}>VEHICLE</Text>
     <View style={styles.settingsGroup}>
       <View style={styles.settingsRow}>
         <Text style={styles.settingsLabel}>Plate Number</Text>
@@ -2061,11 +2141,14 @@ const ConfigScreen = ({ car, onDelete, onChangeCar, units, appTheme, onChangeUni
         <Text style={styles.settingsDestructive}>Delete Vehicle</Text>
       </TouchableOpacity>
     </View>
-  </View>
+      </ScrollView>
+    </SafeAreaView>
   );
 };
 
 // --- COMPONENTS ---
+
+
 
 const ProjectDetailModal = ({
   project,
@@ -2084,105 +2167,170 @@ const ProjectDetailModal = ({
 }: any) => {
   const { theme } = useTheme();
   const styles = useStyles();
-  const insets = useSafeAreaInsets();
+  const [showBudget, setShowBudget] = useState(false);
+  const [showActions, setShowActions] = useState(false);
+  const createdAt = (project as any)?.createdAt ?? project?.updatedAt;
+  const actionsY = useRef(new Animated.Value(300)).current;
+  const openActionsSheet = () => {
+    setShowActions(true);
+    actionsY.setValue(300);
+    Animated.timing(actionsY, { toValue: 0, duration: 220, useNativeDriver: true }).start();
+  };
+  const closeActionsSheet = () => {
+    Animated.timing(actionsY, { toValue: 300, duration: 180, useNativeDriver: true }).start(() => {
+      setShowActions(false);
+    });
+  };
+  const openProjectActions = () => {
+    openActionsSheet();
+  };
   if (!project) return null;
+  const nextActionLabel = project.status !== 'done' ? 'Mark complete' : 'Reopen project';
   return (
-    <View style={[styles.container, { backgroundColor: theme.bg, paddingTop: insets.top + 12 }]}>
+    <View style={[styles.modalBase, { backgroundColor: theme.bg }]}>
       <View style={styles.modalHeader}>
         <TouchableOpacity onPress={onClose}>
-          <Ionicons name="close" size={22} color={theme.text} />
+          <Ionicons name="chevron-back" size={20} color="white" />
         </TouchableOpacity>
         <Text style={styles.modalH1}>{project.title}</Text>
-        <TouchableOpacity onPress={() => onDelete(project)}>
-          <Ionicons name="trash" size={20} color={theme.danger} />
+        <TouchableOpacity onPress={openProjectActions}>
+          <Ionicons name="ellipsis-horizontal" size={22} color="white" />
         </TouchableOpacity>
       </View>
-      <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 120 }}>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
-          <Text style={styles.projectBadge}>{project.status.toUpperCase()}</Text>
-          <Text style={styles.projectMeta}>{new Date(project.updatedAt).toLocaleDateString()}</Text>
-        </View>
-        <Text style={styles.projectStats}>{logs.length} logs</Text>
-        <Text style={[styles.projectStats, { marginTop: 4 }]}>{logs.reduce((sum: number, l: ServiceLog) => sum + (l.cost || 0), 0)} kr total cost</Text>
-        {project.budgetPlanned ? (
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }}>
-            <Ionicons name="wallet" size={14} color={theme.textDim} />
-            <Text style={styles.projectMeta}>
-              Planned {project.budgetPlanned} kr • Variance {(logs.reduce((sum: number, l: ServiceLog) => sum + (l.cost || 0), 0) - project.budgetPlanned)} kr
-            </Text>
+      <ScrollView style={{ backgroundColor: theme.bg }} contentContainerStyle={styles.logForm}>
+        <View style={styles.formSection}>
+          <Text style={styles.sectionHeader}>Summary</Text>
+          <View style={styles.listGroup}>
+            <View style={styles.listRow}>
+              <Text style={styles.listLabel}>Updated</Text>
+              <Text style={styles.listValue}>{new Date(project.updatedAt).toLocaleDateString()}</Text>
+            </View>
+            <View style={styles.listDivider} />
+            <View style={styles.listRow}>
+              <Text style={styles.listLabel}>Created</Text>
+              <Text style={styles.listValue}>{new Date(createdAt).toLocaleDateString()}</Text>
+            </View>
+            <View style={styles.listDivider} />
+            <View style={styles.listRow}>
+              <Text style={styles.listLabel}>Total cost</Text>
+              <Text style={styles.listValue}>{logs.reduce((sum: number, l: ServiceLog) => sum + (l.cost || 0), 0)} kr</Text>
+            </View>
+            {project.budgetPlanned ? (
+              <>
+                <View style={styles.listDivider} />
+                <TouchableOpacity style={styles.listRow} onPress={() => setShowBudget((prev) => !prev)}>
+                  <Text style={styles.listLabel}>Budget</Text>
+                  <View style={styles.listValueRow}>
+                    <Text style={styles.listValue}>{showBudget ? 'Hide' : 'Show'}</Text>
+                    <Ionicons name={showBudget ? 'chevron-up' : 'chevron-down'} size={16} color={theme.textDim} />
+                  </View>
+                </TouchableOpacity>
+                {showBudget && (
+                  <>
+                    <View style={styles.listDivider} />
+                    <View style={styles.listRow}>
+                      <Text style={styles.listLabel}>Planned</Text>
+                      <Text style={styles.listValue}>{project.budgetPlanned} kr</Text>
+                    </View>
+                    <View style={styles.listDivider} />
+                    <View style={styles.listRow}>
+                      <Text style={styles.listLabel}>Variance</Text>
+                      <Text style={styles.listValue}>
+                        {logs.reduce((sum: number, l: ServiceLog) => sum + (l.cost || 0), 0) - project.budgetPlanned} kr
+                      </Text>
+                    </View>
+                  </>
+                )}
+              </>
+            ) : null}
           </View>
-        ) : null}
-        {!!project.description && (
-          <View style={{ marginTop: 8 }}>
-            <Text style={styles.projectMeta}>{project.description}</Text>
-          </View>
-        )}
-        <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
-          <TouchableOpacity style={[styles.primaryBtn, { flex: 1 }]} onPress={onAddLog}>
-            <Text style={styles.btnTxt}>Add log</Text>
-          </TouchableOpacity>
-          {project.status !== 'done' ? (
-            <TouchableOpacity
-              style={[styles.tagButton, { flex: 1, backgroundColor: theme.success, borderColor: theme.success }]}
-              onPress={() => onComplete(project.id)}>
-              <Text style={{ color: 'white', fontWeight: '700', textAlign: 'center' }}>Mark complete</Text>
-            </TouchableOpacity>
-          ) : (
-            <TouchableOpacity
-              style={[styles.tagButton, { flex: 1, backgroundColor: theme.warning, borderColor: theme.warning }]}
-              onPress={() => onReopen(project.id)}>
-              <Text style={{ color: 'white', fontWeight: '700', textAlign: 'center' }}>Reopen project</Text>
-            </TouchableOpacity>
-          )}
+          <View style={{ marginTop: 6 }} />
         </View>
 
-        <Text style={[styles.sectionTitle, { marginTop: 18 }]}>Images</Text>
-        <View style={{ flexDirection: 'row', gap: 10, marginBottom: 12 }}>
-          <TouchableOpacity style={[styles.primaryBtn, { flex: 1 }]} onPress={() => onAddImage('library')}>
-            <Text style={styles.btnTxt}>Add photos</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.secondaryBtn, { flex: 1, borderColor: theme.cardBorder }]} onPress={onOpenGrid}>
-            <Text style={{ color: theme.text, textAlign: 'center' }}>View all</Text>
-          </TouchableOpacity>
+        <View style={styles.formSection}>
+          <Text style={styles.sectionHeader}>Images</Text>
+          <View style={{ flexDirection: 'row', gap: 10, marginBottom: 12 }}>
+            <TouchableOpacity style={[styles.primaryBtn, { flex: 1 }]} onPress={() => onAddImage('library')}>
+              <Text style={styles.btnTxt}>Add photos</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.secondaryBtn, { flex: 1, borderColor: theme.cardBorder }]} onPress={onOpenGrid}>
+              <Text style={{ color: theme.text, textAlign: 'center' }}>View all</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
+            {[...media, ...allLogMedia].map((item: any) => (
+              <Pressable key={item.id} onPress={() => onOpenImage(item)}>
+                <ImageBackground
+                  source={{ uri: item.uri }}
+                  style={{ width: 120, height: 120 }}
+                  imageStyle={{ borderRadius: 12 }}
+                />
+              </Pressable>
+            ))}
+            {![...media, ...allLogMedia].length && <Text style={{ color: theme.textDim }}>No images yet.</Text>}
+          </ScrollView>
         </View>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
-          {[...media, ...allLogMedia].map((item: any) => (
-            <Pressable key={item.id} onPress={() => onOpenImage(item)}>
-              <ImageBackground
-                source={{ uri: item.uri }}
-                style={{ width: 120, height: 120 }}
-                imageStyle={{ borderRadius: 12 }}
-              />
-            </Pressable>
+
+        <View style={styles.formSection}>
+          <Text style={styles.sectionHeader}>Logs</Text>
+          {logs.map((log: ServiceLog) => (
+            <View key={log.id} style={styles.projectListItem}>
+              <View style={styles.projectTopRow}>
+                <Text style={styles.pageTitleSmall}>{log.title}</Text>
+                <Text style={styles.projectMeta}>{log.date}</Text>
+              </View>
+              <Text style={styles.projectStats}>
+                {log.cost} kr {log.mileage ? `• ${formatDistance(log.mileage, units)}` : ''}
+              </Text>
+              {allLogMedia.filter((m: LogMedia) => m.logId === log.id).length > 0 && (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, marginTop: 8 }}>
+                  {allLogMedia
+                    .filter((m: LogMedia) => m.logId === log.id)
+                    .map((m: LogMedia) => (
+                      <ImageBackground
+                        key={m.id}
+                        source={{ uri: m.uri }}
+                        style={{ width: 64, height: 64 }}
+                        imageStyle={{ borderRadius: 10 }}
+                      />
+                    ))}
+                </ScrollView>
+              )}
+            </View>
           ))}
-          {![...media, ...allLogMedia].length && <Text style={{ color: theme.textDim }}>No images yet.</Text>}
-        </ScrollView>
-
-        <Text style={[styles.sectionTitle, { marginTop: 20 }]}>Logs</Text>
-        {logs.map((log: ServiceLog) => (
-          <View key={log.id} style={[styles.projectListItem, { borderColor: theme.cardBorder, backgroundColor: theme.surface }]}>
-            <Text style={styles.pageTitleSmall}>{log.title}</Text>
-            <Text style={styles.projectMeta}>{log.date}</Text>
-          <Text style={styles.projectStats}>{log.cost} kr • {log.mileage ? formatDistance(log.mileage, units) : ''}</Text>
-          {allLogMedia.filter((m: LogMedia) => m.logId === log.id).length > 0 && (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, marginTop: 8 }}>
-              {allLogMedia
-                .filter((m: LogMedia) => m.logId === log.id)
-                .map((m: LogMedia) => (
-                  <ImageBackground
-                    key={m.id}
-                    source={{ uri: m.uri }}
-                    style={{ width: 64, height: 64 }}
-                    imageStyle={{ borderRadius: 10 }}
-                  />
-                ))}
-            </ScrollView>
-          )}
+          {!logs.length && <Text style={{ color: theme.textDim }}>No logs yet.</Text>}
         </View>
-      ))}
-      {!logs.length && <Text style={{ color: theme.textDim }}>No logs yet.</Text>}
-    </ScrollView>
-  </View>
+      </ScrollView>
+      <Modal visible={showActions} transparent animationType="none" onRequestClose={closeActionsSheet}>
+        <Pressable style={styles.sheetOverlay} onPress={closeActionsSheet}>
+          <Animated.View style={[styles.sheetContainer, { transform: [{ translateY: actionsY }] }]}>
+            <View style={styles.sheetHandle} />
+            <TouchableOpacity
+              style={[styles.sheetItem, styles.sheetPrimaryBtn]}
+              onPress={() => {
+                closeActionsSheet();
+                if (project.status !== 'done') {
+                  onComplete(project.id);
+                } else {
+                  onReopen(project.id);
+                }
+              }}
+            >
+              <Text style={styles.sheetPrimaryText}>{nextActionLabel}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.sheetItem, styles.sheetDangerBtn]}
+              onPress={() => {
+                closeActionsSheet();
+                onDelete(project);
+              }}
+            >
+              <Text style={styles.sheetDangerText}>Delete project</Text>
+            </TouchableOpacity>
+          </Animated.View>
+        </Pressable>
+      </Modal>
+    </View>
   );
 };
 
@@ -2297,91 +2445,77 @@ const ProjectFormModal = ({
   const { theme } = useTheme();
   const styles = useStyles();
   const [title, setTitle] = useState(project?.title || '');
-  const [description, setDescription] = useState(project?.description || '');
   const [category, setCategory] = useState(project?.category || '');
   const [budget, setBudget] = useState(project?.budgetPlanned ? String(project.budgetPlanned) : '');
 
   useEffect(() => {
     setTitle(project?.title || '');
-    setDescription(project?.description || '');
     setCategory(project?.category || '');
     setBudget(project?.budgetPlanned ? String(project.budgetPlanned) : '');
   }, [project]);
 
+  if (!visible) return null;
+
   return (
-    <Modal visible={visible} transparent animationType="fade">
-      <View style={styles.modalOverlay}>
-        <View style={[styles.modalPopup, { width: '92%' }]}>
-          <View style={styles.modalHeader}>
-            <TouchableOpacity onPress={onClose}>
-              <Text style={styles.modalCancelText}>Cancel</Text>
-            </TouchableOpacity>
-            <Text style={styles.modalH1}>New Project</Text>
-            <TouchableOpacity
-              onPress={() =>
-                onSave({
-                  title,
-                  description,
-                  category,
-                  budgetPlanned: budget ? Number(budget) : null
-                })
-              }>
-              <Text style={styles.modalSaveText}>Save</Text>
-            </TouchableOpacity>
-          </View>
-          <ScrollView contentContainerStyle={{ gap: 14 }}>
-            <View style={styles.listGroup}>
-              <View style={styles.listRow}>
-                <Text style={styles.listLabel}>Title</Text>
-                <TextInput
-                  style={styles.listInput}
-                  placeholder="Engine overhaul"
-                  placeholderTextColor={theme.textDim}
-                  value={title}
-                  onChangeText={setTitle}
-                />
-              </View>
-              <View style={styles.listDivider} />
-              <View style={[styles.listRow, { alignItems: 'flex-start' }]}>
-                <Text style={styles.listLabel}>Notes</Text>
-                <TextInput
-                  style={[styles.listInput, { height: 80, textAlignVertical: 'top' }]}
-                  placeholder="Scope, parts, goals"
-                  placeholderTextColor={theme.textDim}
-                  value={description}
-                  onChangeText={setDescription}
-                  multiline
-                />
-              </View>
-              <View style={styles.listDivider} />
-              <View style={styles.listRow}>
-                <Text style={styles.listLabel}>Category</Text>
-                <TextInput
-                  style={styles.listInput}
-                  placeholder="Engine"
-                  placeholderTextColor={theme.textDim}
-                  value={category}
-                  onChangeText={setCategory}
-                />
-              </View>
-              <View style={styles.listDivider} />
-              <View style={styles.listRow}>
-                <Text style={styles.listLabel}>Planned</Text>
-                <TextInput
-                  style={styles.listInput}
-                  placeholder="0"
-                  placeholderTextColor={theme.textDim}
-                  keyboardType="numeric"
-                  value={budget}
-                  onChangeText={setBudget}
-                />
-                <Text style={[styles.listLabel, { width: 30, textAlign: 'right' }]}>kr</Text>
-              </View>
-            </View>
-          </ScrollView>
-        </View>
+    <View style={[styles.modalBase, { backgroundColor: theme.bg }]}>
+      <View style={styles.modalHeader}>
+        <TouchableOpacity onPress={onClose}>
+          <Text style={styles.modalCancelText}>Cancel</Text>
+        </TouchableOpacity>
+        <Text style={styles.modalH1}>New Project</Text>
+        <TouchableOpacity
+          onPress={() =>
+            onSave({
+              title,
+              category,
+              budgetPlanned: budget ? Number(budget) : null
+            })
+          }>
+          <Text style={styles.modalSaveText}>Save</Text>
+        </TouchableOpacity>
       </View>
-    </Modal>
+      <ScrollView style={{ backgroundColor: theme.bg }} contentContainerStyle={styles.logForm}>
+        <View style={styles.formSection}>
+          <Text style={styles.sectionHeader}>Details</Text>
+          <View style={styles.listGroup}>
+            <View style={styles.listRow}>
+              <Text style={styles.listLabel}>Title</Text>
+              <TextInput
+                style={styles.listInput}
+                placeholder="Engine overhaul"
+                placeholderTextColor={theme.textDim}
+                value={title}
+                onChangeText={setTitle}
+              />
+            </View>
+            <View style={styles.listDivider} />
+            <View style={styles.listRow}>
+              <Text style={styles.listLabel}>Category</Text>
+              <TextInput
+                style={styles.listInput}
+                placeholder="Engine"
+                placeholderTextColor={theme.textDim}
+                value={category}
+                onChangeText={setCategory}
+              />
+            </View>
+            <View style={styles.listDivider} />
+            <View style={styles.listRow}>
+              <Text style={styles.listLabel}>Planned</Text>
+              <TextInput
+                style={styles.listInput}
+                placeholder="0"
+                placeholderTextColor={theme.textDim}
+                keyboardType="numeric"
+                value={budget}
+                onChangeText={setBudget}
+              />
+              <Text style={[styles.listLabel, { width: 30, textAlign: 'right' }]}>kr</Text>
+            </View>
+          </View>
+        </View>
+      </ScrollView>
+    </View>
   );
 };
 
@@ -3080,7 +3214,23 @@ const createStyles = (theme: typeof LIGHT_THEME) => StyleSheet.create({
   projectMeta: { color: theme.textDim, fontSize: 12 },
   projectStats: { color: theme.text, fontWeight: '600', marginTop: 4 },
   tagButton: { padding: 12, borderRadius: 12, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-  projectListItem: { padding: 14, borderRadius: 14, borderWidth: 1, marginHorizontal: 16, marginBottom: 10 },
+  projectListItem: { padding: 16, borderRadius: 16, borderWidth: 1, borderColor: theme.cardBorder, backgroundColor: theme.card, marginBottom: 12 },
+  projectRow: { flexDirection: 'row', alignItems: 'stretch' },
+  projectStatusStrip: { width: 4, borderRadius: 4 },
+  projectContent: { flex: 1, marginLeft: 12 },
+  projectTopRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
+  projectBottomRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: 10 },
+  tabBarRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 20, paddingBottom: 10 },
+  tabPill: { flex: 1, paddingVertical: 8, borderRadius: 999, borderWidth: 1, borderColor: theme.cardBorder, backgroundColor: theme.surface, alignItems: 'center' },
+  tabPillText: { color: theme.text, fontWeight: '600', fontSize: 12 },
+  sheetOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' },
+  sheetContainer: { backgroundColor: theme.card, paddingTop: 12, paddingBottom: 16, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 16 },
+  sheetHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: theme.cardBorder, alignSelf: 'center', marginBottom: 8 },
+  sheetItem: { alignItems: 'center' },
+  sheetPrimaryBtn: { backgroundColor: theme.primary, borderRadius: 12, paddingVertical: 12, marginBottom: 10 },
+  sheetPrimaryText: { color: 'white', fontSize: 16, fontWeight: '700' },
+  sheetDangerBtn: { backgroundColor: theme.surface, borderRadius: 12, paddingVertical: 12, borderWidth: 1, borderColor: theme.cardBorder },
+  sheetDangerText: { color: theme.danger, fontSize: 16, fontWeight: '700' },
   projectPill: { marginTop: 8, alignSelf: 'flex-start', flexDirection: 'row', gap: 6, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.cardBorder },
   chip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, borderWidth: 1 },
   fullscreenOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'center', alignItems: 'center' },
@@ -3146,6 +3296,7 @@ const createStyles = (theme: typeof LIGHT_THEME) => StyleSheet.create({
   pageSub: { color: theme.textDim, marginBottom: 0 },
   pageHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 },
   headerIconBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: theme.primary, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 6, shadowOffset: { width: 0, height: 3 }, elevation: 3 },
+  headerIconBtnGhost: { width: 36, height: 36, borderRadius: 18, backgroundColor: theme.card, borderWidth: 1, borderColor: theme.cardBorder, alignItems: 'center', justifyContent: 'center' },
   settingsHeader: { color: theme.textDim, fontSize: 12, fontWeight: '600', marginTop: 16, marginBottom: 8, paddingHorizontal: 2, textTransform: 'uppercase', letterSpacing: 0.4 },
   settingsGroup: { backgroundColor: theme.card, borderRadius: 12, borderWidth: 1, borderColor: theme.cardBorder, overflow: 'hidden', marginBottom: 12 },
   settingsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14 },
