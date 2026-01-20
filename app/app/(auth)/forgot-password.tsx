@@ -13,7 +13,7 @@ export default function ForgotPasswordScreen() {
 
   const handleReset = async () => {
     if (!email) {
-      Alert.alert('Missing email', 'Please enter your email.');
+      Alert.alert('Mangler e-post', 'Vennligst skriv inn e-post.');
       return;
     }
 
@@ -25,15 +25,15 @@ export default function ForgotPasswordScreen() {
     setLoading(false);
 
     if (error) {
-      Alert.alert('Reset failed', error.message);
+      Alert.alert('Tilbakestilling feilet', error.message);
     } else {
-      Alert.alert('Check your email', 'We sent you a reset link.');
+      Alert.alert('Sjekk e-posten din', 'Vi har sendt deg en tilbakestillingslenke.');
     }
   };
 
   return (
-    <AuthShell title="Reset password" subtitle="We will email you a reset link">
-      <Text style={styles.label}>Email</Text>
+    <AuthShell title="Tilbakestill passord" subtitle="Vi sender deg en lenke på e-post">
+      <Text style={styles.label}>E-post</Text>
       <TextInput
         style={styles.input}
         autoCapitalize="none"
@@ -45,11 +45,11 @@ export default function ForgotPasswordScreen() {
       />
 
       <Pressable style={styles.primaryButton} onPress={handleReset} disabled={loading}>
-        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Send reset link</Text>}
+        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Send lenke</Text>}
       </Pressable>
 
       <Link href="/(auth)/sign-in" style={styles.link}>
-        Back to sign in
+        Tilbake til innlogging
       </Link>
     </AuthShell>
   );

@@ -14,11 +14,11 @@ export default function ResetPasswordScreen() {
 
   const handleUpdate = async () => {
     if (!password) {
-      Alert.alert('Missing password', 'Please enter a new password.');
+      Alert.alert('Mangler passord', 'Vennligst skriv inn et nytt passord.');
       return;
     }
     if (password !== confirm) {
-      Alert.alert('Password mismatch', 'Please confirm your password.');
+      Alert.alert('Passordene stemmer ikke', 'Vennligst bekreft passordet.');
       return;
     }
 
@@ -27,36 +27,36 @@ export default function ResetPasswordScreen() {
     setLoading(false);
 
     if (error) {
-      Alert.alert('Update failed', error.message);
+      Alert.alert('Oppdatering feilet', error.message);
       return;
     }
 
-    Alert.alert('Password updated', 'You are now signed in.');
+    Alert.alert('Passord oppdatert', 'Du er nå logget inn.');
     router.replace('/(tabs)');
   };
 
   return (
-    <AuthShell title="Set a new password" subtitle="Choose something you will remember">
-      <Text style={styles.label}>New password</Text>
+    <AuthShell title="Velg nytt passord" subtitle="Velg noe du husker">
+      <Text style={styles.label}>Nytt passord</Text>
       <TextInput
         style={styles.input}
         secureTextEntry
-        placeholder="New password"
+        placeholder="Nytt passord"
         value={password}
         onChangeText={setPassword}
       />
 
-      <Text style={styles.label}>Confirm password</Text>
+      <Text style={styles.label}>Bekreft passord</Text>
       <TextInput
         style={styles.input}
         secureTextEntry
-        placeholder="Re-enter password"
+        placeholder="Skriv inn passordet på nytt"
         value={confirm}
         onChangeText={setConfirm}
       />
 
       <Pressable style={styles.primaryButton} onPress={handleUpdate} disabled={loading}>
-        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Update password</Text>}
+        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Oppdater passord</Text>}
       </Pressable>
     </AuthShell>
   );

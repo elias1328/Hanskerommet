@@ -44,7 +44,7 @@ export default function AuthCallbackScreen() {
         return;
       }
 
-      setErrorMessage('Missing confirmation data.');
+      setErrorMessage('Mangler bekreftelsesdata.');
     };
 
     run();
@@ -53,7 +53,7 @@ export default function AuthCallbackScreen() {
   return (
     <View style={styles.container}>
       <ActivityIndicator size="large" color="#0A84FF" />
-      <Text style={styles.text}>{errorMessage ?? 'Finalizing sign-in...'}</Text>
+      <Text style={styles.text}>{errorMessage ?? 'Fullfører innlogging...'}</Text>
     </View>
   );
 }

@@ -19,7 +19,7 @@ import {
   UIManager,
   ImageBackground,
   Dimensions,
-  AppState
+  Keyboard
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -35,6 +35,7 @@ import { supabase } from '@/lib/supabase';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system/legacy';
 import { DARK_THEME, LIGHT_THEME, ThemeContext, StylesContext, useTheme, useStyles, createStyles } from '@/components/garage/theme';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 
 // Enable LayoutAnimation for Android
 if (Platform.OS === 'android') {
@@ -117,9 +118,30 @@ interface Car {
 }
 
 const DEFAULT_DOCS: Doc[] = [
-  { id: '1', title: 'Insurance Policy', expiry: '2025-01-01', type: 'insurance' },
-  { id: '2', title: 'Vognkort (Del 2)', expiry: 'Never', type: 'vognkort' }
+  { id: '1', title: 'Forsikringspolise', expiry: '2025-01-01', type: 'insurance' },
+  { id: '2', title: 'Vognkort (Del 2)', expiry: 'Aldri', type: 'vognkort' }
 ];
+
+const LOG_TYPE_LABELS: Record<string, string> = {
+  service: 'Service',
+  repair: 'Reparasjon',
+  inspection: 'Kontroll',
+  upgrade: 'Oppgradering',
+  fuel: 'Drivstoff',
+};
+
+const formatLogTypeLabel = (value: string) => {
+  const key = String(value || '').toLowerCase();
+  return LOG_TYPE_LABELS[key] || (key ? key.charAt(0).toUpperCase() + key.slice(1) : 'Service');
+};
+
+const PROJECT_STATUS_LABELS: Record<Project['status'], string> = {
+  planned: 'Planlagt',
+  active: 'Aktiv',
+  done: 'Fullført',
+};
+
+const formatProjectStatusLabel = (value: Project['status']) => PROJECT_STATUS_LABELS[value] || value;
 
 const formatDistance = (km: number | undefined | null, units: 'km' | 'mi') => {
   if (km === undefined || km === null || Number.isNaN(km)) {
@@ -159,7 +181,7 @@ const fetchCarDetails = async (plate: string): Promise<Car> => {
   const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
   const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
   if (!anonKey || !supabaseUrl) {
-    throw new Error('Missing Supabase env vars.');
+    throw new Error('Mangler Supabase-miljøvariabler.');
   }
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
@@ -177,11 +199,11 @@ const fetchCarDetails = async (plate: string): Promise<Car> => {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     const status = response.status;
-    const message = data?.error || data?.message || 'Unknown error';
-    throw new Error(`Vehicle lookup failed: ${message} (status ${status})`);
+    const message = data?.error || data?.message || 'Ukjent feil';
+    throw new Error(`Oppslag feilet: ${message} (status ${status})`);
   }
   const raw = data?.kjoretoydataListe?.[0];
-  if (!raw) throw new Error("Car not found");
+  if (!raw) throw new Error('Bil ikke funnet');
 
   // Deep Extract
   const tech = raw.godkjenning?.tekniskGodkjenning?.tekniskeData;
@@ -199,14 +221,14 @@ const fetchCarDetails = async (plate: string): Promise<Car> => {
   return {
     id: `${Date.now()}`,
     plate: raw.kjennemerke?.[0]?.kjennemerke || plate,
-    make: gen?.merke?.[0]?.merke || 'Unknown',
-    model: gen?.handelsbetegnelse?.[0] || 'Unknown',
+    make: gen?.merke?.[0]?.merke || 'Ukjent',
+    model: gen?.handelsbetegnelse?.[0] || 'Ukjent',
     year: raw?.godkjenning?.forstegangsGodkjenning?.forstegangRegistrertDato
       ? new Date(raw.godkjenning.forstegangsGodkjenning.forstegangRegistrertDato).getFullYear()
       : raw.forstegangsregistrering?.registrertForstegangNorgeDato
         ? new Date(raw.forstegangsregistrering.registrertForstegangNorgeDato).getFullYear()
         : 2000,
-    vin: raw.kjoretoyId?.understellsnummer || 'Unknown',
+    vin: raw.kjoretoyId?.understellsnummer || 'Ukjent',
     nextEU: raw.periodiskKjoretoyKontroll?.kontrollfrist || 'N/A',
     mileage: raw?.godkjenning?.forstegangsGodkjenning?.bruktimport?.kilometerstand || 0,
     topSpeed: topSpeed ? `${topSpeed} km/h` : null,
@@ -255,7 +277,7 @@ const resizeAndUploadImage = async (
     .from(MEDIA_BUCKET)
     .createSignedUrl(path, 60 * 60);
   if (signedError || !signed?.signedUrl) {
-    throw new Error(signedError?.message || 'Could not sign media URL');
+    throw new Error(signedError?.message || 'Kunne ikke signere medie-URL');
   }
 
   return { path, signedUrl: signed.signedUrl };
@@ -678,9 +700,10 @@ export default function App() {
 
 
   const openAddLog = (projectId?: string | null) => {
+    const nextProjectId = projectId && projectId.length ? projectId : null;
     setEditingLog(null);
     setSelectedLogType('service');
-    setDraftProjectId(typeof projectId === 'undefined' ? null : projectId);
+    setDraftProjectId(nextProjectId);
     setLogFormSeed(Date.now());
     setModals((prev) => ({ ...prev, addLog: true }));
   };
@@ -737,12 +760,12 @@ export default function App() {
         : car?.mileage || 0;
     if (Platform.OS === 'ios') {
       Alert.prompt(
-        'Update Odometer',
+        'Oppdater kilometerstand',
         '',
         [
-          { text: 'Cancel', style: 'cancel' },
+          { text: 'Avbryt', style: 'cancel' },
           {
-            text: 'Save',
+            text: 'Lagre',
             onPress: (value) =>
               void handleUpdateMileage(toKilometers(parseInt(String(value), 10) || 0, units))
           }
@@ -812,7 +835,7 @@ export default function App() {
   const handleRegister = async (plate: string) => {
     try {
       if (!userId) {
-        Alert.alert('Not signed in', 'Please sign in again.');
+      Alert.alert('Ikke logget inn', 'Vennligst logg inn på nytt.');
         return;
       }
       const data = await fetchCarDetails(plate);
@@ -874,12 +897,12 @@ export default function App() {
         await supabase.from('logs').insert({
           user_id: userId,
           car_id: savedCarRow.id,
-          title: 'Car Added to Glovebox',
+          title: 'Bil lagt til i Hanskerommet',
           date: new Date().toISOString().split('T')[0],
           mileage: 0,
           cost: 0,
           type: 'system',
-          notes: 'Vehicle imported via Statens Vegvesen API.',
+          notes: 'Kjøretøy importert via Statens Vegvesen API.',
           is_system_event: true,
         });
       }
@@ -912,8 +935,8 @@ export default function App() {
       pagerRef.current?.setPage(0);
       await loadCarData(savedCar.id);
     } catch (e: any) {
-      const message = e?.message || 'Could not fetch car details.';
-      Alert.alert('Failed', message);
+      const message = e?.message || 'Kunne ikke hente bildetaljer.';
+      Alert.alert('Feil', message);
     }
   };
 
@@ -929,18 +952,18 @@ export default function App() {
       .insert({
         user_id: userId,
         car_id: car.id,
-        title: 'Odometer Correction',
+        title: 'Kilometerstand korrigert',
         date: new Date().toISOString().split('T')[0],
         mileage: newKm,
         cost: 0,
         type: 'system',
-        notes: `Manual update: ${oldKm}km -> ${newKm}km`,
+        notes: `Manuell oppdatering: ${oldKm}km -> ${newKm}km`,
         is_system_event: true
       })
       .select('*')
       .single();
     if (logError) {
-      Alert.alert('Update failed', logError.message);
+      Alert.alert('Oppdatering feilet', logError.message);
       return;
     }
     const auditLog: ServiceLog = {
@@ -984,7 +1007,7 @@ export default function App() {
       .select('*')
       .single();
     if (error || !projectRow) {
-      Alert.alert('Project failed', error?.message || 'Unable to create project.');
+      Alert.alert('Prosjekt feilet', error?.message || 'Kunne ikke opprette prosjekt.');
       return null;
     }
     const project: Project = {
@@ -1050,7 +1073,7 @@ export default function App() {
       .select('*')
       .single();
     if (logError || !logRow) {
-      Alert.alert('Save failed', logError?.message || 'Could not save log.');
+      Alert.alert('Lagring feilet', logError?.message || 'Kunne ikke lagre logg.');
       return false;
     }
 
@@ -1102,7 +1125,7 @@ export default function App() {
           ]);
         }
       } catch (uploadError: any) {
-        Alert.alert('Upload failed', uploadError?.message || 'Could not upload images.');
+        Alert.alert('Opplasting feilet', uploadError?.message || 'Kunne ikke laste opp bilder.');
       }
     }
     return true;
@@ -1130,7 +1153,7 @@ export default function App() {
       .select('*')
       .single();
     if (error || !logRow) {
-      Alert.alert('Update failed', error?.message || 'Could not update log.');
+      Alert.alert('Oppdatering feilet', error?.message || 'Kunne ikke oppdatere logg.');
       return false;
     }
 
@@ -1189,7 +1212,7 @@ export default function App() {
           ]);
         }
       } catch (uploadError: any) {
-        Alert.alert('Upload failed', uploadError?.message || 'Could not upload images.');
+        Alert.alert('Opplasting feilet', uploadError?.message || 'Kunne ikke laste opp bilder.');
       }
     } else {
       setLogMedia((prev) => prev.filter((m) => m.logId !== log.id));
@@ -1209,7 +1232,7 @@ export default function App() {
       if (source === 'camera') {
         const perm = await ImagePicker.requestCameraPermissionsAsync();
         if (!perm.granted) {
-          Alert.alert('Permission needed', 'Camera access is required to add photos.');
+          Alert.alert('Tillatelse kreves', 'Kameratilgang kreves for å legge til bilder.');
           return;
         }
         result = await ImagePicker.launchCameraAsync(options);
@@ -1234,7 +1257,7 @@ export default function App() {
           .insert(payload)
           .select('*');
         if (error) {
-          Alert.alert('Upload failed', error.message);
+          Alert.alert('Opplasting feilet', error.message);
           return;
         }
         if (mediaRows?.length) {
@@ -1260,10 +1283,10 @@ export default function App() {
   const deleteProject = (projectId: string) => {
     const project = projects.find((p) => p.id === projectId);
     const name = project?.title || 'project';
-    Alert.alert('Delete project', `Are you sure you want to delete "${name}"?`, [
-      { text: 'Cancel', style: 'cancel' },
+    Alert.alert('Slett prosjekt', `Er du sikker på at du vil slette "${name}"?`, [
+      { text: 'Avbryt', style: 'cancel' },
       {
-        text: 'Delete',
+        text: 'Slett',
         style: 'destructive',
         onPress: async () => {
           const projectMediaPaths = projectMedia
@@ -1303,14 +1326,24 @@ export default function App() {
     }
   };
 
-  const handleSaveNickname = (value: string) => {
+  const handleSaveNickname = async (value: string) => {
     if (!car) return;
     const nickname = value.trim();
     const updated = { ...car, nickname };
     setCar(updated);
     setCars((prev) => prev.map((c) => (c.id === car.id ? { ...c, nickname } : c)));
-    if (userId) {
-      supabase.from('cars').update({ nickname }).eq('id', car.id).eq('user_id', userId);
+    const resolvedUserId = userId ?? (await supabase.auth.getUser()).data.user?.id;
+    if (!resolvedUserId) {
+      Alert.alert('Kunne ikke lagre', 'Mangler brukerinfo. Vennligst prøv igjen.');
+      return;
+    }
+    const { error } = await supabase
+      .from('cars')
+      .update({ nickname: nickname || null })
+      .eq('id', car.id)
+      .eq('user_id', resolvedUserId);
+    if (error) {
+      Alert.alert('Kunne ikke lagre', error.message);
     }
   };
 
@@ -1323,10 +1356,10 @@ export default function App() {
   };
 
   const handleDeleteLog = (log: ServiceLog) => {
-    Alert.alert('Delete Log', 'Remove this log entry?', [
-      { text: 'Cancel', style: 'cancel' },
+    Alert.alert('Slett logg', 'Fjerne denne loggoppføringen?', [
+      { text: 'Avbryt', style: 'cancel' },
       {
-        text: 'Delete',
+        text: 'Slett',
         style: 'destructive',
         onPress: async () => {
           const logMediaPaths = logMedia
@@ -1351,25 +1384,23 @@ export default function App() {
   };
 
   useEffect(() => {
-    const subscription = AppState.addEventListener('change', (nextState) => {
-      if (nextState !== 'active') return;
+    if (!dbReady) return;
+    if (view !== 'onboarding' && (!activeCarId || !car)) {
       setView('onboarding');
       pagerRef.current?.setPage(0);
-    });
-
-    return () => subscription.remove();
-  }, [car]);
+    }
+  }, [activeCarId, car, dbReady, view]);
 
   const handleSignOut = () => {
-    Alert.alert('Sign out', 'Sign out of your account?', [
-      { text: 'Cancel', style: 'cancel' },
+    Alert.alert('Logg ut', 'Logg ut av kontoen din?', [
+      { text: 'Avbryt', style: 'cancel' },
       {
-        text: 'Sign out',
+        text: 'Logg ut',
         style: 'destructive',
         onPress: async () => {
           const { error } = await supabase.auth.signOut();
           if (error) {
-            Alert.alert('Sign out failed', error.message);
+            Alert.alert('Utlogging feilet', error.message);
           } else {
             setUserId(null);
             setUserEmail(null);
@@ -1391,9 +1422,9 @@ export default function App() {
   };
 
   const deleteCar = () => {
-    Alert.alert("Nuclear Option", "Delete this car and all history?", [
-      { text: "Cancel", style: 'cancel' },
-      { text: "Delete", style: 'destructive', onPress: async () => {
+    Alert.alert("Siste utvei", "Slett denne bilen og all historikk?", [
+      { text: "Avbryt", style: 'cancel' },
+      { text: "Slett", style: 'destructive', onPress: async () => {
         setCar(null);
         setLogs([]);
         setView('onboarding');
@@ -1510,10 +1541,10 @@ export default function App() {
               <View style={[styles.tabBarContainer, { height: 49 + insets.bottom }]}>
                 <BlurView intensity={50} tint={theme.blurTint} style={[styles.tabBar, { paddingBottom: insets.bottom }]}>
                   <View style={styles.tabBarContent}>
-                    <TabBtn icon="car-sport" label="Garage" active={view === 'garage'} onPress={() => navigateTo('garage')} />
-                    <TabBtn icon="document-text" label="Logs" active={view === 'logs'} onPress={() => navigateTo('logs')} />
-                    <TabBtn icon="layers" label="Projects" active={view === 'projects'} onPress={() => navigateTo('projects')} />
-                    <TabBtn icon="file-tray-full" label="Vault" active={view === 'vault'} onPress={() => navigateTo('vault')} />
+                    <TabBtn icon="car-sport" label="Garasje" active={view === 'garage'} onPress={() => navigateTo('garage')} />
+                    <TabBtn icon="document-text" label="Logger" active={view === 'logs'} onPress={() => navigateTo('logs')} />
+                    <TabBtn icon="layers" label="Prosjekter" active={view === 'projects'} onPress={() => navigateTo('projects')} />
+                    <TabBtn icon="file-tray-full" label="Dokumenter" active={view === 'vault'} onPress={() => navigateTo('vault')} />
                   </View>
                 </BlurView>
 
@@ -1665,10 +1696,10 @@ export default function App() {
                     }
                   }}
                   onDelete={(id: string) => {
-                    Alert.alert('Delete photo', 'Are you sure you want to delete this photo?', [
-                      { text: 'Cancel', style: 'cancel' },
+                    Alert.alert('Slett bilde', 'Er du sikker på at du vil slette dette bildet?', [
+                      { text: 'Avbryt', style: 'cancel' },
                       {
-                        text: 'Delete',
+                        text: 'Slett',
                         style: 'destructive',
                         onPress: async () => {
                           const projectItem = projectMedia.find((m) => m.id === id);
@@ -1749,8 +1780,8 @@ export default function App() {
               )}
               <SimpleInputModal
                 visible={modals.nickname}
-                title="Car Nickname"
-                placeholder={car?.nickname || 'My ride'}
+                title="Kallenavn på bilen"
+                placeholder={car?.nickname || 'Min bil'}
                 keyboard="default"
                 onClose={() => setModals((prev) => ({ ...prev, nickname: false }))}
                 onSave={(val: string) => {
@@ -1760,7 +1791,7 @@ export default function App() {
               />
               <SimpleInputModal
                 visible={modals.mileage}
-                title="Update Odometer"
+                title="Oppdater kilometerstand"
           placeholder={
             car
               ? formatDistance(car.mileage, units).replace(/\\s?(km|mi)$/, '')
@@ -1831,17 +1862,19 @@ const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, onEd
       contentContainerStyle={{ paddingBottom: 140 }}
     >
       <View style={styles.headerBar}>
-        <View>
-          <Text style={styles.headerTitle}>Glovebox</Text>
+        <View style={{ flex: 1, paddingRight: 12 }}>
+          <Text style={styles.headerTitle} numberOfLines={1}>
+            Hanskerommet
+          </Text>
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           <TouchableOpacity style={styles.headerPill} onPress={onOpenLog}>
             <Ionicons name="add" size={16} color="white" />
-            <Text style={styles.headerPillText}>Quick log</Text>
+            <Text style={styles.headerPillText}>Hurtiglogg</Text>
           </TouchableOpacity>
           <TouchableOpacity style={[styles.headerIconBtnGhost, { marginLeft: 8 }]} onPress={onOpenSettings}>
-            <Ionicons name="settings" size={20} color={theme.textDim} />
-          </TouchableOpacity>
+          <Ionicons name="settings" size={20} color={theme.textDim} />
+        </TouchableOpacity>
         </View>
       </View>
 
@@ -1871,31 +1904,31 @@ const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, onEd
         <Text style={styles.sectionTitle}>STATUS</Text>
         <View style={styles.tileGrid}>
           <InfoTile
-            label="Odometer"
+            label="Kilometerstand"
             value={formatDistance(safeCar.mileage, units)}
-            sub="Tap to update"
+            sub="Trykk for å oppdatere"
             tone={theme.primary}
             icon="speedometer"
             onPress={onOpenMileage}
           />
           <InfoTile
-            label="EU Control"
-            value={daysToEu < 0 ? 'Overdue' : `${daysToEu} days`}
-            sub={nextEuRaw || 'N/A'}
+            label="EU-kontroll"
+            value={daysToEu < 0 ? 'Forfalt' : `${daysToEu} dager`}
+            sub={nextEuRaw || 'Ikke tilgjengelig'}
             tone={theme[euStatus]}
             icon="calendar"
           />
           <InfoTile
-            label="Total Cost"
+            label="Totalkostnad"
             value={`${logs.reduce((a:any,b:any)=>a+b.cost,0)} kr`}
-            sub="Lifetime"
+            sub="Totalt"
             tone={theme.accent}
             icon="wallet"
           />
           <InfoTile
-            label="Last Expense"
+            label="Siste utgift"
             value={`${lastExpense} kr`}
-            sub="Most recent"
+            sub="Nyeste"
             tone={theme.success}
             icon="cash"
           />
@@ -1905,8 +1938,8 @@ const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, onEd
       {/* Recent History */}
       <View style={styles.section}>
         <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10}}>
-          <Text style={styles.sectionTitle}>RECENT ACTIVITY</Text>
-          <TouchableOpacity onPress={onViewAllLogs}><Text style={{color: theme.primary, fontWeight: '600'}}>View All</Text></TouchableOpacity>
+          <Text style={styles.sectionTitle}>SISTE AKTIVITET</Text>
+          <TouchableOpacity onPress={onViewAllLogs}><Text style={{color: theme.primary, fontWeight: '600'}}>Vis alle</Text></TouchableOpacity>
         </View>
         {logs.slice(0,3).map((l: ServiceLog) => (
           <LogRow
@@ -1933,12 +1966,12 @@ const VaultScreen = ({ docs, themeKey }: { docs: Doc[]; themeKey: string }) => {
     <View style={styles.screenContainer}>
     <View style={styles.pageHeaderRow}>
       <View>
-        <Text style={styles.pageTitle}>Vault</Text>
-        <Text style={styles.pageSub}>Keep documents safe and ready.</Text>
+        <Text style={styles.pageTitle}>Dokumenter</Text>
+        <Text style={styles.pageSub}>Hold dokumentene trygge og klare.</Text>
       </View>
       <TouchableOpacity
         style={styles.headerIconBtn}
-        onPress={() => Alert.alert("Demo", "Camera scanner would open here.")}>
+        onPress={() => Alert.alert("Demo", "Kameraskanner ville åpnet her.")}>
         <Ionicons name="scan" size={20} color="white" />
       </TouchableOpacity>
     </View>
@@ -1955,7 +1988,7 @@ const VaultScreen = ({ docs, themeKey }: { docs: Doc[]; themeKey: string }) => {
           </View>
           <View style={{flex: 1}}>
             <Text style={styles.docTitle}>{item.title}</Text>
-            <Text style={styles.docSub}>Expires: {item.expiry}</Text>
+            <Text style={styles.docSub}>Utløper: {item.expiry}</Text>
           </View>
           <Ionicons name="chevron-forward" size={20} color={theme.textDim} />
         </TouchableOpacity>
@@ -2015,8 +2048,8 @@ const TimelineScreen = ({
           <View>
             <View style={styles.pageHeaderRow}>
               <View>
-                <Text style={styles.pageTitle}>Service Log</Text>
-                <Text style={styles.pageSub}>Track maintenance and expenses.</Text>
+                <Text style={styles.pageTitle}>Servicelog</Text>
+                <Text style={styles.pageSub}>Følg vedlikehold og utgifter.</Text>
               </View>
               <TouchableOpacity style={styles.headerIconBtn} onPress={onOpenLog}>
                 <Ionicons name="add" size={20} color="white" />
@@ -2024,7 +2057,7 @@ const TimelineScreen = ({
             </View>
 
             <View style={{ marginBottom: 12 }}>
-              <Text style={styles.sectionTitle}>GLOBAL LOGS</Text>
+              <Text style={styles.sectionTitle}>GLOBALE LOGGER</Text>
             </View>
           </View>
         }
@@ -2073,8 +2106,8 @@ const ProjectsScreen = ({
     >
       <View style={styles.pageHeaderRow}>
         <View>
-          <Text style={styles.pageTitle}>Projects</Text>
-          <Text style={styles.pageSub}>Group work into focused timelines.</Text>
+          <Text style={styles.pageTitle}>Prosjekter</Text>
+          <Text style={styles.pageSub}>Samle arbeid i fokuserte prosjekter.</Text>
         </View>
         <TouchableOpacity style={styles.headerIconBtn} onPress={onStartProject}>
           <Ionicons name="add" size={20} color="white" />
@@ -2083,8 +2116,8 @@ const ProjectsScreen = ({
 
       {(activeProjects.length === 0 && completedProjects.length === 0) && (
         <View style={styles.projectListItem}>
-          <Text style={styles.pageTitleSmall}>No projects yet</Text>
-          <Text style={styles.projectMeta}>Create one to track related work.</Text>
+          <Text style={styles.pageTitleSmall}>Ingen prosjekter ennå</Text>
+          <Text style={styles.projectMeta}>Opprett et for å spore relatert arbeid.</Text>
         </View>
       )}
 
@@ -2106,11 +2139,11 @@ const ProjectsScreen = ({
                 <View style={styles.projectBottomRow}>
                   <View>
                     <Text style={styles.projectStats}>
-                      {stats.count ? `${stats.count} logs` : 'No logs yet'}
+                      {stats.count ? `${stats.count} logger` : 'Ingen logger ennå'}
                     </Text>
                     <Text style={styles.projectStats}>{stats.cost} kr</Text>
                   </View>
-                  <Text style={styles.projectBadge}>{item.status.toUpperCase()}</Text>
+                  <Text style={styles.projectBadge}>{formatProjectStatusLabel(item.status).toUpperCase()}</Text>
                 </View>
               </View>
             </View>
@@ -2120,7 +2153,7 @@ const ProjectsScreen = ({
 
       {!!completedProjects.length && (
         <View style={{ marginTop: 12 }}>
-          <Text style={styles.sectionTitle}>COMPLETED</Text>
+          <Text style={styles.sectionTitle}>FULLFØRT</Text>
           {completedProjects.map((item) => {
             const stats = statsForProject(item.id);
             const statusTone = item.status === 'done' ? theme.success : theme.primary;
@@ -2139,11 +2172,11 @@ const ProjectsScreen = ({
                     <View style={styles.projectBottomRow}>
                       <View>
                         <Text style={styles.projectStats}>
-                          {stats.count ? `${stats.count} logs` : 'No logs yet'}
-                        </Text>
-                        <Text style={styles.projectStats}>{stats.cost} kr</Text>
+                        {stats.count ? `${stats.count} logger` : 'Ingen logger ennå'}
+                      </Text>
+                      <Text style={styles.projectStats}>{stats.cost} kr</Text>
                       </View>
-                      <Text style={styles.projectBadge}>{item.status.toUpperCase()}</Text>
+                      <Text style={styles.projectBadge}>{formatProjectStatusLabel(item.status).toUpperCase()}</Text>
                     </View>
                   </View>
                 </View>
@@ -2179,43 +2212,43 @@ const ConfigScreen = ({
             <Ionicons name="chevron-back" size={20} color="white" />
           </TouchableOpacity>
           <View style={{ flex: 1, alignItems: 'center' }}>
-            <Text style={styles.pageTitle}>Settings</Text>
+            <Text style={styles.pageTitle}>Innstillinger</Text>
           </View>
           <View style={{ width: 36 }} />
         </View>
 
-        <Text style={styles.settingsHeader}>VEHICLE</Text>
+        <Text style={styles.settingsHeader}>KJØRETØY</Text>
     <View style={styles.settingsGroup}>
       <View style={styles.settingsRow}>
-        <Text style={styles.settingsLabel}>Plate Number</Text>
+        <Text style={styles.settingsLabel}>Registreringsnummer</Text>
         <Text style={styles.settingsValue}>{safeCar.plate}</Text>
       </View>
       <View style={styles.settingsDivider} />
       <TouchableOpacity style={styles.settingsRow} onPress={onEditNickname}>
-        <Text style={styles.settingsLabel}>Nickname</Text>
+        <Text style={styles.settingsLabel}>Kallenavn</Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <Text style={[styles.settingsValue, !safeCar.nickname && { color: theme.textDim }]}>
-            {safeCar.nickname || 'Add nickname'}
+            {safeCar.nickname || 'Legg til kallenavn'}
           </Text>
           <Ionicons name="create-outline" size={18} color={theme.textDim} />
         </View>
       </TouchableOpacity>
       <View style={styles.settingsDivider} />
       <View style={styles.settingsRow}>
-        <Text style={styles.settingsLabel}>VIN</Text>
+        <Text style={styles.settingsLabel}>Understellsnummer</Text>
         <Text style={styles.settingsValue}>{safeCar.vin}</Text>
       </View>
       <View style={styles.settingsDivider} />
       <TouchableOpacity style={styles.settingsRow} onPress={onChangeCar}>
-        <Text style={styles.settingsLabel}>Change Car</Text>
+        <Text style={styles.settingsLabel}>Bytt bil</Text>
         <Ionicons name="chevron-forward" size={18} color={theme.textDim} />
       </TouchableOpacity>
     </View>
 
-    <Text style={styles.settingsHeader}>Units</Text>
+    <Text style={styles.settingsHeader}>Enheter</Text>
     <View style={styles.settingsGroup}>
       <TouchableOpacity style={styles.settingsChoiceRow} onPress={() => onChangeUnits('km')}>
-        <Text style={styles.settingsChoiceLabel}>Kilometers</Text>
+        <Text style={styles.settingsChoiceLabel}>Kilometer</Text>
         {units === 'km' && <Ionicons name="checkmark" size={18} color={theme.primary} />}
       </TouchableOpacity>
       <View style={styles.settingsDivider} />
@@ -2225,7 +2258,7 @@ const ConfigScreen = ({
       </TouchableOpacity>
     </View>
 
-    <Text style={styles.settingsHeader}>App Theme</Text>
+    <Text style={styles.settingsHeader}>Tema</Text>
     <View style={styles.settingsGroup}>
       <TouchableOpacity style={styles.settingsChoiceRow} onPress={() => onChangeAppTheme('system')}>
         <Text style={styles.settingsChoiceLabel}>System</Text>
@@ -2233,27 +2266,27 @@ const ConfigScreen = ({
       </TouchableOpacity>
       <View style={styles.settingsDivider} />
       <TouchableOpacity style={styles.settingsChoiceRow} onPress={() => onChangeAppTheme('light')}>
-        <Text style={styles.settingsChoiceLabel}>Light</Text>
+        <Text style={styles.settingsChoiceLabel}>Lys</Text>
         {appTheme === 'light' && <Ionicons name="checkmark" size={18} color={theme.primary} />}
       </TouchableOpacity>
       <View style={styles.settingsDivider} />
       <TouchableOpacity style={styles.settingsChoiceRow} onPress={() => onChangeAppTheme('dark')}>
-        <Text style={styles.settingsChoiceLabel}>Dark</Text>
+        <Text style={styles.settingsChoiceLabel}>Mørk</Text>
         {appTheme === 'dark' && <Ionicons name="checkmark" size={18} color={theme.primary} />}
       </TouchableOpacity>
     </View>
 
-    <Text style={styles.settingsHeader}>Account</Text>
+    <Text style={styles.settingsHeader}>Konto</Text>
     <View style={styles.settingsGroup}>
       <TouchableOpacity style={styles.settingsRow} onPress={onSignOut}>
-        <Text style={styles.settingsLabel}>Sign out</Text>
+        <Text style={styles.settingsLabel}>Logg ut</Text>
         <Ionicons name="log-out-outline" size={18} color={theme.textDim} />
       </TouchableOpacity>
     </View>
 
     <View style={styles.settingsGroup}>
       <TouchableOpacity style={styles.settingsRow} onPress={onDelete}>
-        <Text style={styles.settingsDestructive}>Delete Vehicle</Text>
+        <Text style={styles.settingsDestructive}>Slett kjøretøy</Text>
       </TouchableOpacity>
     </View>
       </ScrollView>
@@ -2300,43 +2333,43 @@ const ProjectDetailModal = ({
     openActionsSheet();
   };
   if (!project) return null;
-  const nextActionLabel = project.status !== 'done' ? 'Mark complete' : 'Reopen project';
+  const nextActionLabel = project.status !== 'done' ? 'Merk som fullført' : 'Gjenåpne prosjekt';
   return (
     <View style={[styles.modalBase, { backgroundColor: theme.bg }]}>
       <View style={styles.modalHeader}>
         <TouchableOpacity onPress={onClose}>
           <Ionicons name="chevron-back" size={20} color="white" />
         </TouchableOpacity>
-        <Text style={styles.modalH1}>{project.title}</Text>
+    <Text style={styles.modalH1}>{project.title}</Text>
         <TouchableOpacity onPress={openProjectActions}>
           <Ionicons name="ellipsis-horizontal" size={22} color="white" />
         </TouchableOpacity>
       </View>
       <ScrollView style={{ backgroundColor: theme.bg }} contentContainerStyle={styles.logForm}>
         <View style={styles.formSection}>
-          <Text style={styles.sectionHeader}>Summary</Text>
+          <Text style={styles.sectionHeader}>Oppsummering</Text>
           <View style={styles.listGroup}>
             <View style={styles.listRow}>
-              <Text style={styles.listLabel}>Updated</Text>
+              <Text style={styles.listLabel}>Oppdatert</Text>
               <Text style={styles.listValue}>{new Date(project.updatedAt).toLocaleDateString()}</Text>
             </View>
             <View style={styles.listDivider} />
             <View style={styles.listRow}>
-              <Text style={styles.listLabel}>Created</Text>
+              <Text style={styles.listLabel}>Opprettet</Text>
               <Text style={styles.listValue}>{new Date(createdAt).toLocaleDateString()}</Text>
             </View>
             <View style={styles.listDivider} />
             <View style={styles.listRow}>
-              <Text style={styles.listLabel}>Total cost</Text>
+              <Text style={styles.listLabel}>Total kostnad</Text>
               <Text style={styles.listValue}>{logs.reduce((sum: number, l: ServiceLog) => sum + (l.cost || 0), 0)} kr</Text>
             </View>
             {project.budgetPlanned ? (
               <>
                 <View style={styles.listDivider} />
                 <TouchableOpacity style={styles.listRow} onPress={() => setShowBudget((prev) => !prev)}>
-                  <Text style={styles.listLabel}>Budget</Text>
+                  <Text style={styles.listLabel}>Budsjett</Text>
                   <View style={styles.listValueRow}>
-                    <Text style={styles.listValue}>{showBudget ? 'Hide' : 'Show'}</Text>
+                    <Text style={styles.listValue}>{showBudget ? 'Skjul' : 'Vis'}</Text>
                     <Ionicons name={showBudget ? 'chevron-up' : 'chevron-down'} size={16} color={theme.textDim} />
                   </View>
                 </TouchableOpacity>
@@ -2344,12 +2377,12 @@ const ProjectDetailModal = ({
                   <>
                     <View style={styles.listDivider} />
                     <View style={styles.listRow}>
-                      <Text style={styles.listLabel}>Planned</Text>
+                      <Text style={styles.listLabel}>Planlagt</Text>
                       <Text style={styles.listValue}>{project.budgetPlanned} kr</Text>
                     </View>
                     <View style={styles.listDivider} />
                     <View style={styles.listRow}>
-                      <Text style={styles.listLabel}>Variance</Text>
+                      <Text style={styles.listLabel}>Avvik</Text>
                       <Text style={styles.listValue}>
                         {logs.reduce((sum: number, l: ServiceLog) => sum + (l.cost || 0), 0) - project.budgetPlanned} kr
                       </Text>
@@ -2363,13 +2396,13 @@ const ProjectDetailModal = ({
         </View>
 
         <View style={styles.formSection}>
-          <Text style={styles.sectionHeader}>Images</Text>
+          <Text style={styles.sectionHeader}>Bilder</Text>
           <View style={{ flexDirection: 'row', gap: 10, marginBottom: 12 }}>
             <TouchableOpacity style={[styles.primaryBtn, { flex: 1 }]} onPress={() => onAddImage('library')}>
-              <Text style={styles.btnTxt}>Add photos</Text>
+              <Text style={styles.btnTxt}>Legg til bilder</Text>
             </TouchableOpacity>
             <TouchableOpacity style={[styles.secondaryBtn, { flex: 1, borderColor: theme.cardBorder }]} onPress={onOpenGrid}>
-              <Text style={{ color: theme.text, textAlign: 'center' }}>View all</Text>
+              <Text style={{ color: theme.text, textAlign: 'center' }}>Vis alle</Text>
             </TouchableOpacity>
           </View>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
@@ -2382,12 +2415,12 @@ const ProjectDetailModal = ({
                 />
               </Pressable>
             ))}
-            {![...media, ...allLogMedia].length && <Text style={{ color: theme.textDim }}>No images yet.</Text>}
+            {![...media, ...allLogMedia].length && <Text style={{ color: theme.textDim }}>Ingen bilder ennå.</Text>}
           </ScrollView>
         </View>
 
         <View style={styles.formSection}>
-          <Text style={styles.sectionHeader}>Logs</Text>
+          <Text style={styles.sectionHeader}>Logger</Text>
           {logs.map((log: ServiceLog) => (
             <View key={log.id} style={styles.projectListItem}>
               <View style={styles.projectTopRow}>
@@ -2413,7 +2446,7 @@ const ProjectDetailModal = ({
               )}
             </View>
           ))}
-          {!logs.length && <Text style={{ color: theme.textDim }}>No logs yet.</Text>}
+          {!logs.length && <Text style={{ color: theme.textDim }}>Ingen logger ennå.</Text>}
         </View>
       </ScrollView>
       <Modal visible={showActions} transparent animationType="none" onRequestClose={closeActionsSheet}>
@@ -2440,7 +2473,7 @@ const ProjectDetailModal = ({
                 onDelete(project);
               }}
             >
-              <Text style={styles.sheetDangerText}>Delete project</Text>
+              <Text style={styles.sheetDangerText}>Slett prosjekt</Text>
             </TouchableOpacity>
           </Animated.View>
         </Pressable>
@@ -2527,7 +2560,7 @@ const LogMediaGrid = ({
           <TouchableOpacity onPress={onClose}>
             <Ionicons name="close" size={22} color="white" />
           </TouchableOpacity>
-          <Text style={{ color: 'white', fontWeight: '600' }}>Photos</Text>
+          <Text style={{ color: 'white', fontWeight: '600' }}>Bilder</Text>
           <View style={{ width: 22 }} />
         </View>
         <ScrollView contentContainerStyle={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, padding: 20, paddingTop: 60 }}>
@@ -2575,9 +2608,9 @@ const ProjectFormModal = ({
     <View style={[styles.modalBase, { backgroundColor: theme.bg }]}>
       <View style={styles.modalHeader}>
         <TouchableOpacity onPress={onClose}>
-          <Text style={styles.modalCancelText}>Cancel</Text>
+          <Text style={styles.modalCancelText}>Avbryt</Text>
         </TouchableOpacity>
-        <Text style={styles.modalH1}>New Project</Text>
+        <Text style={styles.modalH1}>Nytt prosjekt</Text>
         <TouchableOpacity
           onPress={() =>
             onSave({
@@ -2586,18 +2619,18 @@ const ProjectFormModal = ({
               budgetPlanned: budget ? Number(budget) : null
             })
           }>
-          <Text style={styles.modalSaveText}>Save</Text>
+          <Text style={styles.modalSaveText}>Lagre</Text>
         </TouchableOpacity>
       </View>
       <ScrollView style={{ backgroundColor: theme.bg }} contentContainerStyle={styles.logForm}>
         <View style={styles.formSection}>
-          <Text style={styles.sectionHeader}>Details</Text>
+          <Text style={styles.sectionHeader}>Detaljer</Text>
           <View style={styles.listGroup}>
             <View style={styles.listRow}>
-              <Text style={styles.listLabel}>Title</Text>
+              <Text style={styles.listLabel}>Tittel</Text>
               <TextInput
                 style={styles.listInput}
-                placeholder="Engine overhaul"
+                placeholder="Motoroverhaling"
                 placeholderTextColor={theme.textDim}
                 value={title}
                 onChangeText={setTitle}
@@ -2605,10 +2638,10 @@ const ProjectFormModal = ({
             </View>
             <View style={styles.listDivider} />
             <View style={styles.listRow}>
-              <Text style={styles.listLabel}>Category</Text>
+              <Text style={styles.listLabel}>Kategori</Text>
               <TextInput
                 style={styles.listInput}
-                placeholder="Engine"
+                placeholder="Motor"
                 placeholderTextColor={theme.textDim}
                 value={category}
                 onChangeText={setCategory}
@@ -2616,7 +2649,7 @@ const ProjectFormModal = ({
             </View>
             <View style={styles.listDivider} />
             <View style={styles.listRow}>
-              <Text style={styles.listLabel}>Planned</Text>
+              <Text style={styles.listLabel}>Planlagt</Text>
               <TextInput
                 style={styles.listInput}
                 placeholder="0"
@@ -2652,7 +2685,7 @@ const ProjectMediaGrid = ({
           <TouchableOpacity onPress={onClose}>
             <Ionicons name="close" size={22} color="white" />
           </TouchableOpacity>
-          <Text style={{ color: 'white', fontWeight: '600' }}>Project Photos</Text>
+          <Text style={{ color: 'white', fontWeight: '600' }}>Prosjektbilder</Text>
           <View style={{ width: 22 }} />
         </View>
         <ScrollView contentContainerStyle={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, padding: 20, paddingTop: 60 }}>
@@ -2679,7 +2712,7 @@ const SpecBox = ({ label, value, icon }: any) => {
       <Ionicons name={icon} size={18} color={theme.primary} style={{marginBottom: 8}} />
       <Text style={styles.specLabel}>{label}</Text>
       <Text style={[styles.specValue, !value && {color: theme.danger}]}>
-        {value || 'Unknown'}
+        {value || 'Ukjent'}
       </Text>
     </View>
   );
@@ -2731,7 +2764,7 @@ const LogRow = ({
   const { theme } = useTheme();
   const styles = useStyles();
   const openActions = () => {
-    const actions = ['Edit', 'Delete', 'Cancel'];
+    const actions = ['Rediger', 'Slett', 'Avbryt'];
     const cancelIndex = 2;
     const destructiveIndex = 1;
     if (Platform.OS === 'ios') {
@@ -2744,10 +2777,10 @@ const LogRow = ({
       );
       return;
     }
-    Alert.alert('Log Entry', 'Choose an action', [
-      { text: 'Edit', onPress: () => onEdit?.(log) },
-      { text: 'Delete', style: 'destructive', onPress: () => onDelete?.(log) },
-      { text: 'Cancel', style: 'cancel' }
+    Alert.alert('Loggoppføring', 'Velg en handling', [
+      { text: 'Rediger', onPress: () => onEdit?.(log) },
+      { text: 'Slett', style: 'destructive', onPress: () => onDelete?.(log) },
+      { text: 'Avbryt', style: 'cancel' }
     ]);
   };
 
@@ -2781,7 +2814,7 @@ const LogRow = ({
           {!!photoCount && (
             <View style={[styles.projectPill, { borderColor: theme.primary, backgroundColor: theme.surface, marginTop: 6 }]}>
               <Ionicons name="image" size={12} color={theme.primary} />
-              <Text style={[styles.logMeta, { color: theme.primary }]}>{photoCount} photo{photoCount > 1 ? 's' : ''}</Text>
+              <Text style={[styles.logMeta, { color: theme.primary }]}>{photoCount} bilde{photoCount > 1 ? 'r' : ''}</Text>
             </View>
           )}
         </View>
@@ -2839,12 +2872,15 @@ const AddLogModal = ({
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [photos, setPhotos] = useState<string[]>([]);
+  const titleRef = useRef<TextInput>(null);
+  const costRef = useRef<TextInput>(null);
+  const mileageRef = useRef<TextInput>(null);
+  const notesRef = useRef<TextInput>(null);
   const prevSeedRef = useRef<number | null>(null);
   const prevLogIdRef = useRef<string | null>(null);
   const formatLogDate = (date: Date) =>
     date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
-  const typeLabel = (value: LogType) =>
-    String(value || '').replace(/^\w/, (char) => char.toUpperCase()) || 'Service';
+  const typeLabel = (value: LogType) => formatLogTypeLabel(value);
   const availableTypes: LogType[] = logTypes?.length ? logTypes : ['service'];
 
   useEffect(() => {
@@ -2880,9 +2916,9 @@ const AddLogModal = ({
   }, [formSeed, initialLog, units, initialMediaUris, selectedProjectId]);
 
   const projectLabel = () => {
-    if (!projectId) return 'None';
+    if (!projectId) return 'Ingen';
     const match = projects?.find((p: Project) => p.id === projectId);
-    return match?.title || 'Project';
+    return match?.title || 'Prosjekt';
   };
 
   const pickPhotos = async (source: 'camera' | 'library') => {
@@ -2896,7 +2932,7 @@ const AddLogModal = ({
       if (source === 'camera') {
         const perm = await ImagePicker.requestCameraPermissionsAsync();
         if (!perm.granted) {
-          Alert.alert('Permission needed', 'Camera access is required to add photos.');
+          Alert.alert('Tillatelse kreves', 'Kameratilgang kreves for å legge til bilder.');
           return;
         }
         result = await ImagePicker.launchCameraAsync(options);
@@ -2915,9 +2951,9 @@ const AddLogModal = ({
     <View style={[styles.modalBase, { backgroundColor: theme.bg }]}>
       <View style={styles.modalHeader}>
         <TouchableOpacity onPress={onClose}>
-          <Text style={styles.modalCancelText}>Cancel</Text>
+          <Text style={styles.modalCancelText}>Avbryt</Text>
         </TouchableOpacity>
-        <Text style={styles.modalH1}>{initialLog ? 'Edit Log' : 'New Log'}</Text>
+        <Text style={styles.modalH1}>{initialLog ? 'Rediger logg' : 'Ny logg'}</Text>
         <TouchableOpacity
             onPress={() => {
               onSelectProject?.(projectId || null);
@@ -2940,29 +2976,38 @@ const AddLogModal = ({
               setNotes('');
               setLogDate(new Date());
             }}>
-          <Text style={styles.modalSaveText}>Save</Text>
+          <Text style={styles.modalSaveText}>Lagre</Text>
         </TouchableOpacity>
       </View>
 
-      <ScrollView style={{ backgroundColor: theme.bg }} contentContainerStyle={styles.logForm}>
+      <KeyboardAwareScrollView
+        style={{ backgroundColor: theme.bg }}
+        contentContainerStyle={styles.logForm}
+        enableOnAndroid
+        extraScrollHeight={140}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag">
         <View style={styles.formSection}>
-          <Text style={styles.sectionHeader}>Details</Text>
+          <Text style={styles.sectionHeader}>Detaljer</Text>
           <View style={styles.listGroup}>
             <View style={styles.listRow}>
-              <Text style={styles.listLabel}>Title</Text>
+              <Text style={styles.listLabel}>Tittel</Text>
               <TextInput
+                ref={titleRef}
                 style={styles.listInput}
                 placeholderTextColor={theme.textDim}
-                placeholder="Oil Change"
+                placeholder="Oljeskift"
                 value={title}
                 onChangeText={setTitle}
+                returnKeyType="next"
+                onSubmitEditing={() => costRef.current?.focus()}
               />
             </View>
             <View style={styles.listDivider} />
             <TouchableOpacity
               style={styles.listRow}
               onPress={() => setShowDatePicker(!showDatePicker)}>
-              <Text style={styles.listLabel}>Date</Text>
+              <Text style={styles.listLabel}>Dato</Text>
               <View style={styles.listValueRow}>
                 <Text style={styles.listValue}>{formatLogDate(logDate)}</Text>
               </View>
@@ -2990,20 +3035,20 @@ const AddLogModal = ({
               <Text style={styles.listLabel}>Type</Text>
               <View style={styles.listValueRow}>
                 <Text style={styles.listValue}>
-                  {String(logType || availableTypes[0]).charAt(0).toUpperCase() + String(logType || availableTypes[0]).slice(1)}
+                  {formatLogTypeLabel(logType || availableTypes[0])}
                 </Text>
               </View>
             </TouchableOpacity>
             <View style={styles.listDivider} />
             <View style={styles.listRow}>
-              <Text style={styles.listLabel}>Project</Text>
+              <Text style={styles.listLabel}>Prosjekt</Text>
               <View style={[styles.listValueRow, { flex: 1, justifyContent: 'flex-end' }]}>
                 <Text style={styles.listValue}>{projectLabel()}</Text>
               </View>
             </View>
             <ScrollView
               horizontal
-              contentContainerStyle={{ gap: 8, paddingVertical: 10 }}
+              contentContainerStyle={{ gap: 8, paddingVertical: 10, paddingLeft: 4, paddingRight: 4 }}
               showsHorizontalScrollIndicator={false}>
               <TouchableOpacity
                 onPress={() => setProjectId(null)}
@@ -3011,7 +3056,7 @@ const AddLogModal = ({
                   styles.chip,
                   { backgroundColor: projectId ? theme.surface : theme.primary, borderColor: theme.cardBorder }
                 ]}>
-                <Text style={{ color: projectId ? theme.text : 'white', fontWeight: '600' }}>None</Text>
+                <Text style={{ color: projectId ? theme.text : 'white', fontWeight: '600' }}>Ingen</Text>
               </TouchableOpacity>
               {(projects || []).map((p: Project) => (
                 <TouchableOpacity
@@ -3030,21 +3075,21 @@ const AddLogModal = ({
               <TouchableOpacity
                 onPress={onRequestNewProject}
                 style={[styles.chip, { backgroundColor: theme.surface, borderColor: theme.primary }]}>
-                <Text style={{ color: theme.primary, fontWeight: '700' }}>+ New</Text>
+                <Text style={{ color: theme.primary, fontWeight: '700' }}>+ Nytt</Text>
               </TouchableOpacity>
             </ScrollView>
           </View>
         </View>
 
         <View style={styles.formSection}>
-          <Text style={styles.sectionHeader}>Photos</Text>
+          <Text style={styles.sectionHeader}>Bilder</Text>
           <View style={[styles.listGroup, { padding: 12, gap: 10 }]}>
             <View style={{ flexDirection: 'row', gap: 10 }}>
               <TouchableOpacity style={[styles.secondaryBtn, { flex: 1, borderColor: theme.cardBorder }]} onPress={() => pickPhotos('library')}>
-                <Text style={{ color: theme.text, textAlign: 'center' }}>Add from library</Text>
+                <Text style={{ color: theme.text, textAlign: 'center' }}>Legg til fra bibliotek</Text>
               </TouchableOpacity>
               <TouchableOpacity style={[styles.secondaryBtn, { flex: 1, borderColor: theme.cardBorder }]} onPress={() => pickPhotos('camera')}>
-                <Text style={{ color: theme.text, textAlign: 'center' }}>Use camera</Text>
+                <Text style={{ color: theme.text, textAlign: 'center' }}>Bruk kamera</Text>
               </TouchableOpacity>
             </View>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
@@ -3057,54 +3102,64 @@ const AddLogModal = ({
                   />
                 </Pressable>
               ))}
-              {!photos.length && <Text style={{ color: theme.textDim }}>No photos attached.</Text>}
+              {!photos.length && <Text style={{ color: theme.textDim }}>Ingen bilder lagt til.</Text>}
             </ScrollView>
           </View>
         </View>
 
         <View style={styles.formSection}>
-          <Text style={styles.sectionHeader}>Numbers</Text>
+          <Text style={styles.sectionHeader}>Tall</Text>
           <View style={styles.listGroup}>
             <View style={styles.listRow}>
-              <Text style={styles.listLabel}>Cost</Text>
+              <Text style={styles.listLabel}>Kostnad</Text>
               <TextInput
+                ref={costRef}
                 style={styles.listInput}
                 placeholderTextColor={theme.textDim}
                 placeholder="0"
                 keyboardType="numeric"
                 value={cost}
                 onChangeText={setCost}
+                returnKeyType="next"
+                onSubmitEditing={() => mileageRef.current?.focus()}
               />
             </View>
             <View style={styles.listDivider} />
             <View style={styles.listRow}>
-              <Text style={styles.listLabel}>Mileage</Text>
+              <Text style={styles.listLabel}>Kilometerstand</Text>
               <TextInput
+                ref={mileageRef}
                 style={styles.listInput}
                 placeholderTextColor={theme.textDim}
                 placeholder={mileagePlaceholder}
                 keyboardType="numeric"
                 value={mileage}
                 onChangeText={setMileage}
+                returnKeyType="next"
+                onSubmitEditing={() => notesRef.current?.focus()}
               />
             </View>
           </View>
         </View>
 
         <View style={styles.formSection}>
-          <Text style={styles.sectionHeader}>Notes</Text>
+          <Text style={styles.sectionHeader}>Notater</Text>
           <View style={styles.listGroup}>
             <TextInput
+              ref={notesRef}
               style={styles.notesInput}
               placeholderTextColor={theme.textDim}
-              placeholder="Details..."
+              placeholder="Detaljer..."
               value={notes}
               onChangeText={setNotes}
               multiline
+              returnKeyType="done"
+              blurOnSubmit
+              onSubmitEditing={() => Keyboard.dismiss()}
             />
           </View>
         </View>
-      </ScrollView>
+      </KeyboardAwareScrollView>
     </View>
   );
 };
@@ -3128,10 +3183,10 @@ const SimpleInputModal = ({ visible, title, placeholder, keyboard, onClose, onSa
             keyboardType={keyboard}
             autoFocus
           />
-          {units && <Text style={styles.popupHelp}>Unit: {units.toUpperCase()}</Text>}
+          {units && <Text style={styles.popupHelp}>Enhet: {units.toUpperCase()}</Text>}
           <View style={{flexDirection: 'row', gap: 10, marginTop: 20}}>
-            <TouchableOpacity onPress={onClose} style={[styles.popupBtn, {backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.cardBorder}]}><Text style={{color: theme.text}}>Cancel</Text></TouchableOpacity>
-            <TouchableOpacity onPress={() => onSave(val)} style={[styles.popupBtn, {backgroundColor: theme.primary}]}><Text style={{fontWeight: '600', color: 'white'}}>Save</Text></TouchableOpacity>
+            <TouchableOpacity onPress={onClose} style={[styles.popupBtn, {backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.cardBorder}]}><Text style={{color: theme.text}}>Avbryt</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => onSave(val)} style={[styles.popupBtn, {backgroundColor: theme.primary}]}><Text style={{fontWeight: '600', color: 'white'}}>Lagre</Text></TouchableOpacity>
           </View>
         </View>
       </View>
@@ -3144,20 +3199,20 @@ const TypesPage = ({ types, selectedType, onSelectType, onAddType, onRemoveType,
   const styles = useStyles();
   const promptAddType = () => {
     if (Platform.OS === 'ios') {
-      Alert.prompt('New Type', 'Name your type', [
-        { text: 'Cancel', style: 'cancel' },
+      Alert.prompt('Ny type', 'Gi typen et navn', [
+        { text: 'Avbryt', style: 'cancel' },
         {
-          text: 'Add',
+          text: 'Legg til',
           onPress: (value) => onAddType(String(value || ''))
         }
       ]);
       return;
     }
 
-    Alert.alert('New Type', 'Enter the type name:', [
-      { text: 'Cancel', style: 'cancel' },
+    Alert.alert('Ny type', 'Skriv inn typenavn:', [
+      { text: 'Avbryt', style: 'cancel' },
       {
-        text: 'Add',
+        text: 'Legg til',
         onPress: () => {}
       }
     ]);
@@ -3167,16 +3222,16 @@ const TypesPage = ({ types, selectedType, onSelectType, onAddType, onRemoveType,
     <View style={[styles.modalBase, { backgroundColor: theme.bg }]}>
       <View style={styles.modalHeader}>
         <TouchableOpacity onPress={onClose}>
-          <Text style={styles.modalCancelText}>Done</Text>
+          <Text style={styles.modalCancelText}>Ferdig</Text>
         </TouchableOpacity>
-        <Text style={styles.modalH1}>Manage Types</Text>
+        <Text style={styles.modalH1}>Administrer typer</Text>
         <TouchableOpacity style={styles.headerIconBtn} onPress={promptAddType}>
           <Ionicons name="add" size={20} color="white" />
         </TouchableOpacity>
       </View>
       <ScrollView style={{ backgroundColor: theme.bg }} contentContainerStyle={styles.logForm}>
         <View style={styles.formSection}>
-          <Text style={styles.sectionHeader}>Your Types</Text>
+          <Text style={styles.sectionHeader}>Dine typer</Text>
           <View style={styles.listGroup}>
             {types.map((type: string, index: number) => (
               <View key={type}>
@@ -3190,7 +3245,7 @@ const TypesPage = ({ types, selectedType, onSelectType, onAddType, onRemoveType,
                     <TouchableOpacity style={styles.typeSelectBtn} onPress={() => onSelectType(type)}>
                       <View style={styles.typeNameRow}>
                         <Ionicons name={getTypeIconName(type)} size={16} color={theme.textDim} />
-                        <Text style={styles.typeName}>{String(type).charAt(0).toUpperCase() + String(type).slice(1)}</Text>
+                        <Text style={styles.typeName}>{formatLogTypeLabel(type)}</Text>
                       </View>
                       {selectedType === type && (
                         <Ionicons name="checkmark" size={18} color={theme.primary} />
@@ -3213,7 +3268,7 @@ const Onboarding = ({ onRegister, cars, userEmail, onSelectCar }: any) => {
   const styles = useStyles();
   const [plate, setPlate] = useState('');
   const [load, setLoad] = useState(false);
-  const emailLabel = userEmail ? `Signed in as ${userEmail}` : null;
+  const emailLabel = userEmail ? `Innlogget som ${userEmail}` : null;
   return (
     <KeyboardAvoidingView
       style={styles.container}
@@ -3226,8 +3281,8 @@ const Onboarding = ({ onRegister, cars, userEmail, onSelectCar }: any) => {
           <View style={styles.onboardingIcon}>
             <Ionicons name="car-sport" size={40} color={theme.primary} />
           </View>
-          <Text style={styles.onboardingTitle}>Glovebox</Text>
-          <Text style={styles.onboardingSub}>Log service history in seconds.</Text>
+          <Text style={styles.onboardingTitle}>Hanskerommet</Text>
+          <Text style={styles.onboardingSub}>Loggfør servicehistorikk på sekunder.</Text>
           {!!emailLabel && <Text style={styles.onboardingSub}>{emailLabel}</Text>}
           {!!cars?.length && (
             <View style={styles.onboardingList}>
@@ -3259,7 +3314,7 @@ const Onboarding = ({ onRegister, cars, userEmail, onSelectCar }: any) => {
           )}
           <TextInput 
             style={[styles.input, styles.onboardingInput]} 
-            placeholder="LICENSE PLATE" 
+            placeholder="REGISTRERINGSNUMMER" 
             placeholderTextColor={theme.textDim}
             value={plate}
             onChangeText={setPlate}

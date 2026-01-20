@@ -15,11 +15,11 @@ export default function SignUpScreen() {
 
   const handleSignUp = async () => {
     if (!email || !password) {
-      Alert.alert('Missing info', 'Please enter your email and password.');
+      Alert.alert('Mangler informasjon', 'Vennligst skriv inn e-post og passord.');
       return;
     }
     if (password !== confirm) {
-      Alert.alert('Password mismatch', 'Please confirm your password.');
+      Alert.alert('Passordene stemmer ikke', 'Vennligst bekreft passordet.');
       return;
     }
 
@@ -35,13 +35,13 @@ export default function SignUpScreen() {
     setLoading(false);
 
     if (error) {
-      Alert.alert('Sign up failed', error.message);
+      Alert.alert('Registrering feilet', error.message);
     }
   };
 
   return (
-    <AuthShell title="Create account" subtitle="Start your first session">
-      <Text style={styles.label}>Email</Text>
+    <AuthShell title="Opprett konto" subtitle="Kom i gang">
+      <Text style={styles.label}>E-post</Text>
       <TextInput
         style={styles.input}
         autoCapitalize="none"
@@ -52,32 +52,32 @@ export default function SignUpScreen() {
         onChangeText={setEmail}
       />
 
-      <Text style={styles.label}>Password</Text>
+      <Text style={styles.label}>Passord</Text>
       <TextInput
         style={styles.input}
         secureTextEntry
-        placeholder="Create a password"
+        placeholder="Opprett et passord"
         value={password}
         onChangeText={setPassword}
       />
 
-      <Text style={styles.label}>Confirm password</Text>
+      <Text style={styles.label}>Bekreft passord</Text>
       <TextInput
         style={styles.input}
         secureTextEntry
-        placeholder="Re-enter password"
+        placeholder="Skriv inn passordet på nytt"
         value={confirm}
         onChangeText={setConfirm}
       />
 
       <Pressable style={styles.primaryButton} onPress={handleSignUp} disabled={loading}>
-        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Create account</Text>}
+        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Opprett konto</Text>}
       </Pressable>
 
       <View style={{ marginTop: 14, alignItems: 'center' }}>
-        <Text style={styles.helper}>Already have an account?</Text>
+        <Text style={styles.helper}>Har du allerede en konto?</Text>
         <Link href="/(auth)/sign-in" style={styles.link}>
-          Sign in
+          Logg inn
         </Link>
       </View>
     </AuthShell>

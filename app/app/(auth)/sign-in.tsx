@@ -13,7 +13,7 @@ export default function SignInScreen() {
 
   const handleSignIn = async () => {
     if (!email || !password) {
-      Alert.alert('Missing info', 'Please enter your email and password.');
+      Alert.alert('Mangler informasjon', 'Vennligst skriv inn e-post og passord.');
       return;
     }
 
@@ -25,13 +25,13 @@ export default function SignInScreen() {
     setLoading(false);
 
     if (error) {
-      Alert.alert('Sign in failed', error.message);
+      Alert.alert('Innlogging feilet', error.message);
     }
   };
 
   return (
-    <AuthShell title="Welcome back" subtitle="Sign in to continue">
-      <Text style={styles.label}>Email</Text>
+    <AuthShell title="Velkommen tilbake" subtitle="Logg inn for å fortsette">
+      <Text style={styles.label}>E-post</Text>
       <TextInput
         style={styles.input}
         autoCapitalize="none"
@@ -42,27 +42,27 @@ export default function SignInScreen() {
         onChangeText={setEmail}
       />
 
-      <Text style={styles.label}>Password</Text>
+      <Text style={styles.label}>Passord</Text>
       <TextInput
         style={styles.input}
         secureTextEntry
-        placeholder="Your password"
+        placeholder="Passord"
         value={password}
         onChangeText={setPassword}
       />
 
       <Pressable style={styles.primaryButton} onPress={handleSignIn} disabled={loading}>
-        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Sign in</Text>}
+        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Logg inn</Text>}
       </Pressable>
 
       <Link href="/(auth)/forgot-password" style={styles.link}>
-        Forgot password?
+        Glemt passord?
       </Link>
 
       <View style={{ marginTop: 14, alignItems: 'center' }}>
-        <Text style={styles.helper}>No account yet?</Text>
+        <Text style={styles.helper}>Har du ikke konto?</Text>
         <Link href="/(auth)/sign-up" style={styles.link}>
-          Create one
+          Opprett konto
         </Link>
       </View>
     </AuthShell>
