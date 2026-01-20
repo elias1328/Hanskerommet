@@ -1,6 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
-  StyleSheet,
   Text,
   View,
   TouchableOpacity,
@@ -19,7 +18,8 @@ import {
   LayoutAnimation,
   UIManager,
   ImageBackground,
-  Dimensions
+  Dimensions,
+  AppState
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -31,7 +31,10 @@ import * as ImagePicker from 'expo-image-picker';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Swipeable } from 'react-native-gesture-handler';
 import { getBrandLogo } from '../../brand-logos';
-import * as SQLite from 'expo-sqlite';
+import { supabase } from '@/lib/supabase';
+import * as ImageManipulator from 'expo-image-manipulator';
+import * as FileSystem from 'expo-file-system/legacy';
+import { DARK_THEME, LIGHT_THEME, ThemeContext, StylesContext, useTheme, useStyles, createStyles } from '@/components/garage/theme';
 
 // Enable LayoutAnimation for Android
 if (Platform.OS === 'android') {
@@ -71,7 +74,7 @@ interface Project {
   title: string;
   status: 'planned' | 'active' | 'done';
   updatedAt: number;
-  carId: number;
+  carId: string;
   description?: string | null;
   category?: string | null;
   budgetPlanned?: number | null;
@@ -82,7 +85,8 @@ interface ProjectMedia {
   projectId: string;
   uri: string;
   type: 'image';
-  carId: number;
+  carId: string;
+  storagePath?: string;
 }
 
 interface LogMedia {
@@ -90,11 +94,12 @@ interface LogMedia {
   logId: string;
   uri: string;
   type: 'image';
-  carId: number;
+  carId: string;
+  storagePath?: string;
 }
 
 interface Car {
-  id: number;
+  id: string;
   plate: string;
   make: string;
   model: string;
@@ -130,62 +135,10 @@ const formatDistance = (km: number | undefined | null, units: 'km' | 'mi') => {
 const toKilometers = (value: number, units: 'km' | 'mi') =>
   units === 'mi' ? Math.round(value / 0.621371) : Math.round(value);
 
-const openDbAsync = () => SQLite.openDatabaseAsync('glovebox.db');
-
-// --- 2. THEMES ---
-
-const LIGHT_THEME = {
-  scheme: 'light' as const,
-  bg: '#F2F2F7',
-  card: '#FFFFFF',
-  cardBorder: '#E5E5EA',
-  primary: '#007AFF',
-  accent: '#5856D6',
-  success: '#34C759',
-  warning: '#FF9500',
-  danger: '#FF3B30',
-  text: '#1C1C1E',
-  textDim: '#8E8E93',
-  surface: '#F9F9FB',
-  tabBarBg: 'rgba(255,255,255,0.7)',
-  tabBarBorder: 'rgba(229,229,234,0.8)',
-  blurTint: 'light' as const,
-};
-
-const DARK_THEME = {
-  scheme: 'dark' as const,
-  bg: '#0B0D10',
-  card: '#14171C',
-  cardBorder: '#232834',
-  primary: '#0A84FF',
-  accent: '#BF5AF2',
-  success: '#32D74B',
-  warning: '#FF9F0A',
-  danger: '#FF453A',
-  text: '#F2F2F7',
-  textDim: '#8E8E93',
-  surface: '#1C1F26',
-  tabBarBg: 'rgba(20,23,28,0.72)',
-  tabBarBorder: 'rgba(44,48,58,0.9)',
-  blurTint: 'dark' as const,
-};
-
-const ThemeContext = React.createContext({
-  theme: LIGHT_THEME,
-  statusBarStyle: 'dark' as 'light' | 'dark'
-});
-const StylesContext = React.createContext<ReturnType<typeof createStyles> | null>(null);
-
-const useTheme = () => React.useContext(ThemeContext);
-const useStyles = () => {
-  const ctx = React.useContext(StylesContext);
-  return ctx || createStyles(LIGHT_THEME);
-};
-
-// --- 3. API SERVICE ---
+// --- 2. API SERVICE ---
 
 const getMockCar = (plate: string): Car => ({
-  id: Date.now(),
+  id: `${Date.now()}`,
   plate: plate.toUpperCase(),
   make: 'Volkswagen',
   model: 'Golf GTI',
@@ -203,26 +156,30 @@ const getMockCar = (plate: string): Car => ({
 const fetchCarDetails = async (plate: string): Promise<Car> => {
   if (USE_MOCK_API) return new Promise(r => setTimeout(() => r(getMockCar(plate)), 1000));
 
-  const apiBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL;
-  if (!apiBaseUrl) throw new Error('Missing EXPO_PUBLIC_API_BASE_URL');
-
-  const url = `${apiBaseUrl.replace(/\/$/, '')}/car?plate=${encodeURIComponent(plate.replace(/\s/g, ''))}`;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12000);
-  let response: Response;
-  try {
-    response = await fetch(url, { signal: controller.signal });
-  } catch (error: any) {
-    if (error?.name === 'AbortError') {
-      throw new Error('Request timed out. Check server or network.');
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
+  const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
+  const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
+  if (!anonKey || !supabaseUrl) {
+    throw new Error('Missing Supabase env vars.');
   }
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
 
-  if (!response.ok) throw new Error(`API Error: ${response.status}`);
-  const data = await response.json();
+  const response = await fetch(`${supabaseUrl.replace(/\/$/, '')}/functions/v1/vehicle-lookup`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: anonKey,
+      Authorization: `Bearer ${accessToken || anonKey}`,
+    },
+    body: JSON.stringify({ plate }),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const status = response.status;
+    const message = data?.error || data?.message || 'Unknown error';
+    throw new Error(`Vehicle lookup failed: ${message} (status ${status})`);
+  }
   const raw = data?.kjoretoydataListe?.[0];
   if (!raw) throw new Error("Car not found");
 
@@ -240,7 +197,7 @@ const fetchCarDetails = async (plate: string): Promise<Car> => {
     null;
 
   return {
-    id: Date.now(),
+    id: `${Date.now()}`,
     plate: raw.kjennemerke?.[0]?.kjennemerke || plate,
     make: gen?.merke?.[0]?.merke || 'Unknown',
     model: gen?.handelsbetegnelse?.[0] || 'Unknown',
@@ -260,13 +217,74 @@ const fetchCarDetails = async (plate: string): Promise<Car> => {
   };
 };
 
+const MEDIA_BUCKET = 'media';
+
+const base64ToUint8Array = (base64: string) => {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+};
+
+const resizeAndUploadImage = async (
+  uri: string,
+  pathPrefix: string
+): Promise<{ path: string; signedUrl: string }> => {
+  const manipulated = await ImageManipulator.manipulateAsync(
+    uri,
+    [{ resize: { width: 1280 } }],
+    { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
+  );
+  const base64 = await FileSystem.readAsStringAsync(manipulated.uri, {
+    encoding: FileSystem.EncodingType?.Base64 ?? 'base64'
+  });
+  const bytes = base64ToUint8Array(base64);
+  const filename = `${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
+  const path = `${pathPrefix}/${filename}`;
+
+  const { error: uploadError } = await supabase.storage
+    .from(MEDIA_BUCKET)
+    .upload(path, bytes, { contentType: 'image/jpeg', upsert: true });
+  if (uploadError) {
+    throw new Error(uploadError.message);
+  }
+
+  const { data: signed, error: signedError } = await supabase.storage
+    .from(MEDIA_BUCKET)
+    .createSignedUrl(path, 60 * 60);
+  if (signedError || !signed?.signedUrl) {
+    throw new Error(signedError?.message || 'Could not sign media URL');
+  }
+
+  return { path, signedUrl: signed.signedUrl };
+};
+
+const createSignedUrlMap = async (paths: string[]) => {
+  if (!paths.length) return new Map<string, string>();
+  const { data, error } = await supabase.storage.from(MEDIA_BUCKET).createSignedUrls(paths, 60 * 60);
+  if (error || !data) return new Map<string, string>();
+  const map = new Map<string, string>();
+  data.forEach((item) => {
+    if (item.path && item.signedUrl) {
+      map.set(item.path, item.signedUrl);
+    }
+  });
+  return map;
+};
+
+const removeStoragePaths = async (paths: string[]) => {
+  const cleaned = paths.filter(Boolean);
+  if (!cleaned.length) return;
+  await supabase.storage.from(MEDIA_BUCKET).remove(cleaned);
+};
+
 // --- 4. MAIN APP ---
 
 export default function App() {
   const insets = useSafeAreaInsets();
   const pagerRef = useRef<PagerView>(null);
-  const dbRef = useRef<any>(null);
-  const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
   const settingsProjectIdRef = useRef<string | null>(null);
   const tabKeys = ['garage', 'logs', 'projects', 'vault'] as const;
   const screenWidth = Dimensions.get('window').width;
@@ -282,7 +300,7 @@ export default function App() {
   const [view, setView] = useState<'onboarding' | 'garage' | 'vault' | 'logs' | 'config'>('onboarding');
   const [cars, setCars] = useState<Car[]>([]);
   const [car, setCar] = useState<Car | null>(null);
-  const [activeCarId, setActiveCarId] = useState<number | null>(null);
+  const [activeCarId, setActiveCarId] = useState<string | null>(null);
   const [logs, setLogs] = useState<ServiceLog[]>([]);
   const [selectedLogType, setSelectedLogType] = useState<LogType>('service');
   const [logTypes, setLogTypes] = useState<LogType[]>([
@@ -302,15 +320,8 @@ export default function App() {
   const [appTheme, setAppTheme] = useState<'system' | 'light' | 'dark'>('system');
   const [dbReady, setDbReady] = useState(false);
   const [isHydrating, setIsHydrating] = useState(false);
-
-  const enqueueWrite = (task: () => Promise<void>) => {
-    writeQueueRef.current = writeQueueRef.current
-      .then(task)
-      .catch((error: any) => {
-        console.warn('Failed to write to local DB', error);
-      });
-    return writeQueueRef.current;
-  };
+  const [userId, setUserId] = useState<string | null>(null);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
   const colorScheme = useColorScheme();
 
   const resolvedTheme = appTheme === 'system' ? (colorScheme ?? 'light') : appTheme;
@@ -388,140 +399,50 @@ export default function App() {
     }
   }, [appX, onboardingX, screenWidth, view]);
   useEffect(() => {
-    const initDb = async () => {
+    const initData = async () => {
       try {
-        const db = await openDbAsync();
-        dbRef.current = db;
-
-        await db.execAsync(`CREATE TABLE IF NOT EXISTS car (
-            id INTEGER PRIMARY KEY NOT NULL,
-            plate TEXT,
-            make TEXT,
-            model TEXT,
-            nickname TEXT,
-            year INTEGER,
-            vin TEXT,
-            nextEU TEXT,
-            mileage INTEGER,
-            topSpeed TEXT,
-            engineLiters TEXT,
-            totalWeight TEXT,
-            seats TEXT,
-            fuelType TEXT
-          );
-          CREATE TABLE IF NOT EXISTS logs (
-            id TEXT PRIMARY KEY NOT NULL,
-            title TEXT,
-            date TEXT,
-            mileage INTEGER,
-            cost INTEGER,
-            type TEXT,
-            notes TEXT,
-            isSystemEvent INTEGER,
-            projectId TEXT,
-            carId INTEGER
-          );
-          CREATE TABLE IF NOT EXISTS projects (
-            id TEXT PRIMARY KEY NOT NULL,
-            title TEXT,
-            status TEXT,
-            updatedAt INTEGER,
-            description TEXT,
-            category TEXT,
-            budgetPlanned REAL,
-            carId INTEGER
-          );
-          CREATE TABLE IF NOT EXISTS project_media (
-            id TEXT PRIMARY KEY NOT NULL,
-            projectId TEXT,
-            uri TEXT,
-            type TEXT,
-            carId INTEGER
-          );
-          CREATE TABLE IF NOT EXISTS log_media (
-            id TEXT PRIMARY KEY NOT NULL,
-            logId TEXT,
-            uri TEXT,
-            type TEXT,
-            carId INTEGER
-          );
-          CREATE TABLE IF NOT EXISTS types (
-            name TEXT PRIMARY KEY NOT NULL
-          );
-          CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY NOT NULL,
-            value TEXT
-          );
-          CREATE TABLE IF NOT EXISTS docs (
-            id TEXT PRIMARY KEY NOT NULL,
-            title TEXT,
-            expiry TEXT,
-            type TEXT,
-            carId INTEGER
-          );`);
-
-        const logColumns = await db.getAllAsync<any>('PRAGMA table_info(logs)');
-        if (!logColumns.some((col: any) => col.name === 'carId')) {
-          await db.execAsync('ALTER TABLE logs ADD COLUMN carId INTEGER');
-        }
-        if (!logColumns.some((col: any) => col.name === 'projectId')) {
-          await db.execAsync('ALTER TABLE logs ADD COLUMN projectId TEXT');
-        }
-        const carColumns = await db.getAllAsync<any>('PRAGMA table_info(car)');
-        if (!carColumns.some((col: any) => col.name === 'nickname')) {
-          await db.execAsync('ALTER TABLE car ADD COLUMN nickname TEXT');
-        }
-        const docColumns = await db.getAllAsync<any>('PRAGMA table_info(docs)');
-        if (!docColumns.some((col: any) => col.name === 'carId')) {
-          await db.execAsync('ALTER TABLE docs ADD COLUMN carId INTEGER');
-        }
-        const mediaColumns = await db.getAllAsync<any>('PRAGMA table_info(project_media)');
-        if (!mediaColumns.some((col: any) => col.name === 'carId')) {
-          await db.execAsync('ALTER TABLE project_media ADD COLUMN carId INTEGER');
-        }
-        const logMediaColumns = await db.getAllAsync<any>('PRAGMA table_info(log_media)');
-        if (!logMediaColumns.some((col: any) => col.name === 'carId')) {
-          await db.execAsync('ALTER TABLE log_media ADD COLUMN carId INTEGER');
-        }
-        const projectColumns = await db.getAllAsync<any>('PRAGMA table_info(projects)');
-        if (!projectColumns.some((col: any) => col.name === 'description')) {
-          await db.execAsync('ALTER TABLE projects ADD COLUMN description TEXT');
-        }
-        if (!projectColumns.some((col: any) => col.name === 'category')) {
-          await db.execAsync('ALTER TABLE projects ADD COLUMN category TEXT');
-        }
-        if (!projectColumns.some((col: any) => col.name === 'budgetPlanned')) {
-          await db.execAsync('ALTER TABLE projects ADD COLUMN budgetPlanned REAL');
+        setIsHydrating(true);
+        const { data: userData, error: userError } = await supabase.auth.getUser();
+        if (userError || !userData.user) {
+          setIsHydrating(false);
+          return;
         }
 
-        const carRows = await db.getAllAsync<any>('SELECT * FROM car ORDER BY id DESC');
-        if (carRows.length) {
-          const fallbackCarId = Number(carRows[0].id);
-          await db.runAsync('UPDATE logs SET carId = ? WHERE carId IS NULL', [fallbackCarId]);
-          await db.runAsync('UPDATE docs SET carId = ? WHERE carId IS NULL', [fallbackCarId]);
-        }
-        if (carRows.length) {
-          const mappedCars = carRows.map((row: any) => ({
-            id: Number(row.id),
+        const uid = userData.user.id;
+        setUserId(uid);
+        setUserEmail(userData.user.email ?? null);
+
+        const { data: carsData, error: carsError } = await supabase
+          .from('cars')
+          .select('*')
+          .eq('user_id', uid)
+          .order('created_at', { ascending: false });
+        if (carsError) throw carsError;
+        setCars(
+          (carsData || []).map((row: any) => ({
+            id: row.id,
             plate: row.plate,
             make: row.make,
             model: row.model,
             nickname: row.nickname,
-            year: Number(row.year) || 0,
+            year: row.year || 0,
             vin: row.vin,
-            nextEU: row.nextEU,
-            mileage: Number(row.mileage) || 0,
-            topSpeed: row.topSpeed,
-            engineLiters: row.engineLiters,
-            totalWeight: row.totalWeight,
+            nextEU: row.next_eu,
+            mileage: row.mileage || 0,
+            topSpeed: row.top_speed,
+            engineLiters: row.engine_liters,
+            totalWeight: row.total_weight,
             seats: row.seats,
-            fuelType: row.fuelType
-          }));
-          setCars(mappedCars);
-        }
+            fuelType: row.fuel_type
+          }))
+        );
 
-        const typeRows = await db.getAllAsync<any>('SELECT name FROM types');
-        if (typeRows.length) {
+        const { data: typeRows, error: typeError } = await supabase
+          .from('types')
+          .select('name')
+          .eq('user_id', uid);
+        if (typeError) throw typeError;
+        if (typeRows?.length) {
           const names = typeRows.map((row: any) => row.name);
           setLogTypes(names);
           setSelectedLogType(names[0] || 'service');
@@ -529,67 +450,38 @@ export default function App() {
           const defaults = ['service', 'repair', 'inspection', 'upgrade', 'fuel'];
           setLogTypes(defaults);
           setSelectedLogType('service');
-          await db.withExclusiveTransactionAsync(async (tx) => {
-            for (const name of defaults) {
-              await tx.runAsync('INSERT OR IGNORE INTO types (name) VALUES (?)', [name]);
-            }
-          });
+          await supabase.from('types').insert(defaults.map((name) => ({ user_id: uid, name })));
         }
 
-        const settingsRows = await db.getAllAsync<any>('SELECT key, value FROM settings');
-        let storedActiveCarId: number | null = null;
-        settingsRows.forEach((row: any) => {
+        const { data: settingsRows, error: settingsError } = await supabase
+          .from('settings')
+          .select('key,value')
+          .eq('user_id', uid);
+        if (settingsError) throw settingsError;
+        (settingsRows || []).forEach((row: any) => {
           if (row.key === 'units' && (row.value === 'km' || row.value === 'mi')) {
             setUnits(row.value);
           }
           if (row.key === 'appTheme' && ['system', 'light', 'dark'].includes(row.value)) {
             setAppTheme(row.value);
           }
-          if (row.key === 'activeCarId' && row.value) {
-            const parsed = Number(row.value);
-            if (!Number.isNaN(parsed)) {
-              storedActiveCarId = parsed;
-            }
-          }
           if (row.key === 'activeProjectId' && row.value) {
             settingsProjectIdRef.current = row.value;
           }
         });
 
-        const activeId = storedActiveCarId ?? (carRows.length ? Number(carRows[0].id) : null);
-        if (activeId) {
-          setIsHydrating(true);
-          setActiveCarId(activeId);
-          const activeCar = carRows.find((row: any) => Number(row.id) === activeId);
-          if (activeCar) {
-            setCar({
-              id: Number(activeCar.id),
-              plate: activeCar.plate,
-              make: activeCar.make,
-              model: activeCar.model,
-              nickname: activeCar.nickname,
-              year: Number(activeCar.year) || 0,
-              vin: activeCar.vin,
-              nextEU: activeCar.nextEU,
-              mileage: Number(activeCar.mileage) || 0,
-              topSpeed: activeCar.topSpeed,
-              engineLiters: activeCar.engineLiters,
-              totalWeight: activeCar.totalWeight,
-              seats: activeCar.seats,
-              fuelType: activeCar.fuelType
-            });
-            setView('garage');
-            pagerRef.current?.setPage(0);
-          }
-        }
-
+        setCar(null);
+        setActiveCarId(null);
+        setView('onboarding');
         setDbReady(true);
       } catch (error) {
-        console.warn('Failed to init local DB', error);
+        console.warn('Failed to init Supabase data', error);
+      } finally {
+        setIsHydrating(false);
       }
     };
 
-    initDb();
+    initData();
   }, []);
 
   useEffect(() => {
@@ -622,57 +514,72 @@ export default function App() {
     }).start();
   }, [modals.projectDetail, projectDetailX, screenWidth]);
 
-  const loadCarData = async (carId: number) => {
-    if (!dbRef.current) return;
-    const db = dbRef.current;
+  const loadCarData = async (carId: string) => {
+    if (!userId) {
+      setIsHydrating(false);
+      return;
+    }
     setIsHydrating(true);
 
     try {
-      const logRows = await db.getAllAsync<any>(
-        'SELECT * FROM logs WHERE carId = ? ORDER BY date DESC, id DESC',
-        [carId]
-      );
+      const { data: logRows, error: logError } = await supabase
+        .from('logs')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('car_id', carId)
+        .order('date', { ascending: false })
+        .order('created_at', { ascending: false });
+      if (logError) throw logError;
       setLogs(
-        logRows.map((row: any) => ({
+        (logRows || []).map((row: any) => ({
           id: row.id,
           title: row.title,
           date: row.date,
-          mileage: Number(row.mileage) || 0,
-          cost: Number(row.cost) || 0,
+          mileage: row.mileage || 0,
+          cost: row.cost || 0,
           type: row.type,
           notes: row.notes || '',
-          projectId: row.projectId || null,
-          isSystemEvent: Number(row.isSystemEvent) === 1
+          projectId: row.project_id || null,
+          isSystemEvent: !!row.is_system_event
         }))
       );
 
-      const logMediaRows = await db.getAllAsync<any>(
-        'SELECT * FROM log_media WHERE carId = ?',
-        [carId]
-      );
+      const { data: logMediaRows, error: logMediaError } = await supabase
+        .from('log_media')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('car_id', carId);
+      if (logMediaError) throw logMediaError;
+      const logPaths = (logMediaRows || []).map((row: any) => row.uri).filter(Boolean);
+      const logUrlMap = await createSignedUrlMap(logPaths);
       setLogMedia(
-        logMediaRows.map((row: any) => ({
+        (logMediaRows || []).map((row: any) => ({
           id: row.id,
-          logId: row.logId,
-          uri: row.uri,
+          logId: row.log_id,
+          uri: logUrlMap.get(row.uri) || row.uri,
           type: (row.type as 'image') || 'image',
-          carId: Number(row.carId) || carId
+          carId: row.car_id,
+          storagePath: row.uri
         }))
       );
 
-      const projectRows = await db.getAllAsync<any>(
-        'SELECT * FROM projects WHERE carId = ? ORDER BY updatedAt DESC',
-        [carId]
-      );
-      const mappedProjects = projectRows.map((row: any) => ({
+      const { data: projectRows, error: projectError } = await supabase
+        .from('projects')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('car_id', carId)
+        .order('updated_at', { ascending: false });
+      if (projectError) throw projectError;
+      const mappedProjects = (projectRows || []).map((row: any) => ({
         id: row.id,
         title: row.title,
         status: (row.status as Project['status']) || 'active',
-        updatedAt: Number(row.updatedAt) || Date.now(),
-        carId: Number(row.carId) || carId,
+        updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : Date.now(),
+        carId: row.car_id,
         description: row.description,
         category: row.category,
-        budgetPlanned: row.budgetPlanned !== null && row.budgetPlanned !== undefined ? Number(row.budgetPlanned) : null
+        budgetPlanned:
+          row.budget_planned !== null && row.budget_planned !== undefined ? Number(row.budget_planned) : null
       }));
       setProjects(mappedProjects);
       const storedProjectId = settingsProjectIdRef.current;
@@ -683,21 +590,32 @@ export default function App() {
       settingsProjectIdRef.current = null;
       setActiveProjectId(nextProjectId);
 
-      const mediaRows = await db.getAllAsync<any>(
-        'SELECT * FROM project_media WHERE carId = ?',
-        [carId]
+      const { data: mediaRows, error: mediaError } = await supabase
+        .from('project_media')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('car_id', carId);
+      if (mediaError) throw mediaError;
+      const projectPaths = (mediaRows || []).map((row: any) => row.uri).filter(Boolean);
+      const projectUrlMap = await createSignedUrlMap(projectPaths);
+      setProjectMedia(
+        (mediaRows || []).map((row: any) => ({
+          id: row.id,
+          projectId: row.project_id,
+          uri: projectUrlMap.get(row.uri) || row.uri,
+          type: (row.type as 'image') || 'image',
+          carId: row.car_id,
+          storagePath: row.uri
+        }))
       );
-      const mappedMedia = mediaRows.map((row: any) => ({
-        id: row.id,
-        projectId: row.projectId,
-        uri: row.uri,
-        type: (row.type as 'image') || 'image',
-        carId: Number(row.carId) || carId
-      }));
-      setProjectMedia(mappedMedia);
 
-      const docsRows = await db.getAllAsync<any>('SELECT * FROM docs WHERE carId = ?', [carId]);
-      if (docsRows.length) {
+      const { data: docsRows, error: docsError } = await supabase
+        .from('docs')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('car_id', carId);
+      if (docsError) throw docsError;
+      if (docsRows?.length) {
         setDocs(
           docsRows.map((row: any) => ({
             id: row.id,
@@ -707,21 +625,26 @@ export default function App() {
           }))
         );
       } else {
-        const seededDocs = DEFAULT_DOCS.map((doc) => ({
-          ...doc,
-          id: `${carId}-${doc.id}`
+        const payload = DEFAULT_DOCS.map((doc) => ({
+          user_id: userId,
+          car_id: carId,
+          title: doc.title,
+          expiry: doc.expiry,
+          type: doc.type
         }));
-        setDocs(seededDocs);
-        enqueueWrite(async () => {
-          await db.withExclusiveTransactionAsync(async (tx: any) => {
-            for (const doc of seededDocs) {
-              await tx.runAsync(
-                'INSERT OR IGNORE INTO docs (id, title, expiry, type, carId) VALUES (?, ?, ?, ?, ?)',
-                [doc.id, doc.title, doc.expiry, doc.type, carId]
-              );
-            }
-          });
-        });
+        const { data: insertedDocs } = await supabase.from('docs').insert(payload).select('*');
+        if (insertedDocs?.length) {
+          setDocs(
+            insertedDocs.map((row: any) => ({
+              id: row.id,
+              title: row.title,
+              expiry: row.expiry,
+              type: row.type
+            }))
+          );
+        } else {
+          setDocs(DEFAULT_DOCS);
+        }
       }
     } finally {
       setIsHydrating(false);
@@ -742,160 +665,17 @@ export default function App() {
   }, [activeCarId, cars, car]);
 
   useEffect(() => {
-    if (!dbReady || !dbRef.current || !car || isHydrating) return;
-    const db = dbRef.current;
-    enqueueWrite(async () => {
-      await db.runAsync(
-        `UPDATE car SET plate = ?, make = ?, model = ?, nickname = ?, year = ?, vin = ?, nextEU = ?, mileage = ?, topSpeed = ?, engineLiters = ?, totalWeight = ?, seats = ?, fuelType = ? WHERE id = ?`,
-        [
-          car.plate,
-          car.make,
-          car.model,
-          car.nickname || null,
-          car.year,
-          car.vin,
-          car.nextEU,
-          car.mileage,
-          car.topSpeed,
-          car.engineLiters,
-          car.totalWeight,
-          car.seats,
-          car.fuelType,
-          car.id
-        ]
-      );
-    });
-  }, [car, dbReady, isHydrating]);
+    if (!dbReady || !userId) return;
+    const updates = [
+      { user_id: userId, key: 'units', value: units },
+      { user_id: userId, key: 'appTheme', value: appTheme },
+    ];
+    if (activeProjectId) {
+      updates.push({ user_id: userId, key: 'activeProjectId', value: activeProjectId });
+    }
+    supabase.from('settings').upsert(updates, { onConflict: 'user_id,key' });
+  }, [units, appTheme, activeProjectId, dbReady, userId]);
 
-  useEffect(() => {
-    if (!dbReady || !dbRef.current || !activeCarId || isHydrating) return;
-    const db = dbRef.current;
-    enqueueWrite(async () => {
-      await db.withExclusiveTransactionAsync(async (tx: any) => {
-        await tx.runAsync('DELETE FROM logs WHERE carId = ?', [activeCarId]);
-        for (const log of logs) {
-          await tx.runAsync(
-            'INSERT OR REPLACE INTO logs (id, title, date, mileage, cost, type, notes, isSystemEvent, projectId, carId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [
-              log.id,
-              log.title,
-              log.date,
-              log.mileage,
-              log.cost,
-              log.type,
-              log.notes,
-              log.isSystemEvent ? 1 : 0,
-              log.projectId || null,
-              activeCarId
-            ]
-          );
-        }
-      });
-    });
-  }, [logs, dbReady, activeCarId, isHydrating]);
-
-  useEffect(() => {
-    if (!dbReady || !dbRef.current || !activeCarId || isHydrating) return;
-    const db = dbRef.current;
-    enqueueWrite(async () => {
-      await db.withExclusiveTransactionAsync(async (tx: any) => {
-        await tx.runAsync('DELETE FROM projects WHERE carId = ?', [activeCarId]);
-        for (const project of projects) {
-          await tx.runAsync(
-            'INSERT OR REPLACE INTO projects (id, title, status, updatedAt, description, category, budgetPlanned, carId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            [
-              project.id,
-              project.title,
-              project.status,
-              project.updatedAt,
-              project.description || null,
-              project.category || null,
-              project.budgetPlanned ?? null,
-              activeCarId
-            ]
-          );
-        }
-      });
-    });
-  }, [projects, dbReady, activeCarId, isHydrating]);
-
-  useEffect(() => {
-    if (!dbReady || !dbRef.current || !activeCarId || isHydrating) return;
-    const db = dbRef.current;
-    enqueueWrite(async () => {
-      await db.withExclusiveTransactionAsync(async (tx: any) => {
-        await tx.runAsync('DELETE FROM project_media WHERE carId = ?', [activeCarId]);
-        for (const media of projectMedia) {
-          await tx.runAsync(
-            'INSERT OR REPLACE INTO project_media (id, projectId, uri, type, carId) VALUES (?, ?, ?, ?, ?)',
-            [media.id, media.projectId, media.uri, media.type, activeCarId]
-          );
-        }
-      });
-    });
-  }, [projectMedia, dbReady, activeCarId, isHydrating]);
-
-  useEffect(() => {
-    if (!dbReady || !dbRef.current || !activeCarId || isHydrating) return;
-    const db = dbRef.current;
-    enqueueWrite(async () => {
-      await db.withExclusiveTransactionAsync(async (tx: any) => {
-        await tx.runAsync('DELETE FROM log_media WHERE carId = ?', [activeCarId]);
-        for (const media of logMedia) {
-          await tx.runAsync(
-            'INSERT OR REPLACE INTO log_media (id, logId, uri, type, carId) VALUES (?, ?, ?, ?, ?)',
-            [media.id, media.logId, media.uri, media.type, activeCarId]
-          );
-        }
-      });
-    });
-  }, [logMedia, dbReady, activeCarId, isHydrating]);
-
-  useEffect(() => {
-    if (!dbReady || !dbRef.current) return;
-    const db = dbRef.current;
-    enqueueWrite(async () => {
-      await db.withExclusiveTransactionAsync(async (tx: any) => {
-        await tx.runAsync('DELETE FROM types');
-        for (const name of logTypes) {
-          await tx.runAsync('INSERT OR IGNORE INTO types (name) VALUES (?)', [name]);
-        }
-      });
-    });
-  }, [logTypes, dbReady]);
-
-  useEffect(() => {
-    if (!dbReady || !dbRef.current) return;
-    const db = dbRef.current;
-    enqueueWrite(async () => {
-      await db.withExclusiveTransactionAsync(async (tx: any) => {
-        await tx.runAsync('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ['units', units]);
-        await tx.runAsync('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ['appTheme', appTheme]);
-        if (activeCarId) {
-          await tx.runAsync('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ['activeCarId', String(activeCarId)]);
-          if (activeProjectId) {
-            await tx.runAsync('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ['activeProjectId', activeProjectId]);
-          }
-        }
-      });
-    });
-  }, [units, appTheme, activeCarId, activeProjectId, dbReady]);
-
-  useEffect(() => {
-    if (!dbReady || !dbRef.current || !activeCarId || isHydrating) return;
-    const db = dbRef.current;
-    enqueueWrite(async () => {
-      await db.withExclusiveTransactionAsync(async (tx: any) => {
-        await tx.runAsync('DELETE FROM docs WHERE carId = ?', [activeCarId]);
-        for (const doc of docs) {
-          await tx.runAsync(
-            'INSERT OR REPLACE INTO docs (id, title, expiry, type, carId) VALUES (?, ?, ?, ?, ?)',
-            [doc.id, doc.title, doc.expiry, doc.type, activeCarId]
-          );
-        }
-      });
-    });
-  }, [docs, dbReady, activeCarId, isHydrating]);
 
   const openAddLog = (projectId?: string | null) => {
     setEditingLog(null);
@@ -964,7 +744,7 @@ export default function App() {
           {
             text: 'Save',
             onPress: (value) =>
-              handleUpdateMileage(toKilometers(parseInt(String(value), 10) || 0, units))
+              void handleUpdateMileage(toKilometers(parseInt(String(value), 10) || 0, units))
           }
         ],
         'plain-text',
@@ -1031,133 +811,194 @@ export default function App() {
 
   const handleRegister = async (plate: string) => {
     try {
+      if (!userId) {
+        Alert.alert('Not signed in', 'Please sign in again.');
+        return;
+      }
       const data = await fetchCarDetails(plate);
-      if (dbReady && dbRef.current) {
-        const db = dbRef.current;
-        const existing = await db.getFirstAsync<any>('SELECT id FROM car WHERE plate = ?', [
-          data.plate
-        ]);
-        let carId = existing?.id ? Number(existing.id) : null;
-        const initLog: ServiceLog = {
-          id: Date.now().toString(),
+      const { data: existingCar, error: existingError } = await supabase
+        .from('cars')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('plate', data.plate)
+        .maybeSingle();
+      if (existingError) throw existingError;
+
+      let savedCarRow = existingCar;
+      if (existingCar) {
+        const { data: updated, error: updateError } = await supabase
+          .from('cars')
+          .update({
+            make: data.make,
+            model: data.model,
+            year: data.year,
+            vin: data.vin,
+            next_eu: data.nextEU,
+            mileage: data.mileage,
+            top_speed: data.topSpeed,
+            engine_liters: data.engineLiters,
+            total_weight: data.totalWeight,
+            seats: data.seats,
+            fuel_type: data.fuelType,
+          })
+          .eq('id', existingCar.id)
+          .eq('user_id', userId)
+          .select('*')
+          .single();
+        if (updateError) throw updateError;
+        savedCarRow = updated;
+      } else {
+        const { data: created, error: insertError } = await supabase
+          .from('cars')
+          .insert({
+            user_id: userId,
+            plate: data.plate,
+            make: data.make,
+            model: data.model,
+            nickname: null,
+            year: data.year,
+            vin: data.vin,
+            next_eu: data.nextEU,
+            mileage: data.mileage,
+            top_speed: data.topSpeed,
+            engine_liters: data.engineLiters,
+            total_weight: data.totalWeight,
+            seats: data.seats,
+            fuel_type: data.fuelType,
+          })
+          .select('*')
+          .single();
+        if (insertError) throw insertError;
+        savedCarRow = created;
+
+        await supabase.from('logs').insert({
+          user_id: userId,
+          car_id: savedCarRow.id,
           title: 'Car Added to Glovebox',
           date: new Date().toISOString().split('T')[0],
           mileage: 0,
           cost: 0,
           type: 'system',
           notes: 'Vehicle imported via Statens Vegvesen API.',
-          isSystemEvent: true
-        };
-
-        await enqueueWrite(async () => {
-          await db.withExclusiveTransactionAsync(async (tx: any) => {
-            if (carId) {
-              await tx.runAsync(
-                `UPDATE car SET make = ?, model = ?, year = ?, vin = ?, nextEU = ?, mileage = ?, topSpeed = ?, engineLiters = ?, totalWeight = ?, seats = ?, fuelType = ? WHERE id = ?`,
-                [
-                  data.make,
-                  data.model,
-                  data.year,
-                  data.vin,
-                  data.nextEU,
-                  data.mileage,
-                  data.topSpeed,
-                  data.engineLiters,
-                  data.totalWeight,
-                  data.seats,
-                  data.fuelType,
-                  carId
-                ]
-              );
-            } else {
-              const insertResult = await tx.runAsync(
-                `INSERT INTO car (plate, make, model, nickname, year, vin, nextEU, mileage, topSpeed, engineLiters, totalWeight, seats, fuelType)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [
-                  data.plate,
-                  data.make,
-                  data.model,
-                  null,
-                  data.year,
-                  data.vin,
-                  data.nextEU,
-                  data.mileage,
-                  data.topSpeed,
-                  data.engineLiters,
-                  data.totalWeight,
-                  data.seats,
-                  data.fuelType
-                ]
-              );
-              carId = insertResult.lastInsertRowId;
-            }
-
-            await tx.runAsync(
-              'INSERT OR REPLACE INTO logs (id, title, date, mileage, cost, type, notes, isSystemEvent, carId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-              [
-                initLog.id,
-                initLog.title,
-                initLog.date,
-                initLog.mileage,
-                initLog.cost,
-                initLog.type,
-                initLog.notes,
-                initLog.isSystemEvent ? 1 : 0,
-                carId
-              ]
-            );
-          });
+          is_system_event: true,
         });
-
-        const savedCar: Car = { ...data, id: carId || Date.now(), nickname: null };
-        setCars((prev) => {
-          const next = prev.filter((c) => c.id !== savedCar.id);
-          return [savedCar, ...next];
-        });
-        setCar(savedCar);
-        setActiveCarId(savedCar.id);
-        setLogs([initLog]);
-        setIsHydrating(true);
-        setView('garage');
-        pagerRef.current?.setPage(0);
       }
-    } catch (e) {
-      Alert.alert("Failed", "Could not fetch car details.");
+
+      if (!savedCarRow) return;
+      const savedCar: Car = {
+        id: savedCarRow.id,
+        plate: savedCarRow.plate,
+        make: savedCarRow.make,
+        model: savedCarRow.model,
+        nickname: savedCarRow.nickname,
+        year: savedCarRow.year || 0,
+        vin: savedCarRow.vin,
+        nextEU: savedCarRow.next_eu,
+        mileage: savedCarRow.mileage || 0,
+        topSpeed: savedCarRow.top_speed,
+        engineLiters: savedCarRow.engine_liters,
+        totalWeight: savedCarRow.total_weight,
+        seats: savedCarRow.seats,
+        fuelType: savedCarRow.fuel_type,
+      };
+
+      setCars((prev) => {
+        const next = prev.filter((c) => c.id !== savedCar.id);
+        return [savedCar, ...next];
+      });
+      setCar(savedCar);
+      setActiveCarId(savedCar.id);
+      setView('garage');
+      pagerRef.current?.setPage(0);
+      await loadCarData(savedCar.id);
+    } catch (e: any) {
+      const message = e?.message || 'Could not fetch car details.';
+      Alert.alert('Failed', message);
     }
   };
 
-  const handleUpdateMileage = (newKm: number) => {
-    if (!car) return;
+  const handleUpdateMileage = async (newKm: number) => {
+    if (!car || !userId) return;
     const oldKm = car.mileage;
     setCar({ ...car, mileage: newKm });
+    setCars((prev) => prev.map((c) => (c.id === car.id ? { ...c, mileage: newKm } : c)));
     
     // AUDIT LOG
+    const { data: logRow, error: logError } = await supabase
+      .from('logs')
+      .insert({
+        user_id: userId,
+        car_id: car.id,
+        title: 'Odometer Correction',
+        date: new Date().toISOString().split('T')[0],
+        mileage: newKm,
+        cost: 0,
+        type: 'system',
+        notes: `Manual update: ${oldKm}km -> ${newKm}km`,
+        is_system_event: true
+      })
+      .select('*')
+      .single();
+    if (logError) {
+      Alert.alert('Update failed', logError.message);
+      return;
+    }
     const auditLog: ServiceLog = {
-      id: Date.now().toString(),
-      title: 'Odometer Correction',
-      date: new Date().toISOString().split('T')[0],
-      mileage: newKm,
-      cost: 0,
-      type: 'system',
-      notes: `Manual update: ${oldKm}km -> ${newKm}km`,
-      isSystemEvent: true
+      id: logRow.id,
+      title: logRow.title,
+      date: logRow.date,
+      mileage: logRow.mileage || 0,
+      cost: logRow.cost || 0,
+      type: logRow.type,
+      notes: logRow.notes || '',
+      projectId: logRow.project_id || null,
+      isSystemEvent: !!logRow.is_system_event
     };
-    setLogs([auditLog, ...logs]);
+    setLogs((prev) => [auditLog, ...prev]);
+    await supabase
+      .from('cars')
+      .update({ mileage: newKm })
+      .eq('id', car.id)
+      .eq('user_id', userId);
     setModals({ ...modals, mileage: false });
   };
 
-  const handleCreateProject = (title: string) => {
+  const handleCreateProject = async (
+    title: string,
+    details?: { description?: string | null; category?: string | null; budgetPlanned?: number | null }
+  ) => {
     const clean = String(title || '').trim();
-    if (!clean || !activeCarId) return null;
+    if (!clean || !activeCarId || !userId) return null;
+    const { data: projectRow, error } = await supabase
+      .from('projects')
+      .insert({
+        user_id: userId,
+        car_id: activeCarId,
+        title: clean,
+        status: 'active',
+        updated_at: new Date().toISOString(),
+        description: details?.description ?? editingProject?.description ?? null,
+        category: details?.category ?? editingProject?.category ?? null,
+        budget_planned: details?.budgetPlanned ?? editingProject?.budgetPlanned ?? null
+      })
+      .select('*')
+      .single();
+    if (error || !projectRow) {
+      Alert.alert('Project failed', error?.message || 'Unable to create project.');
+      return null;
+    }
     const project: Project = {
-      id: `project-${Date.now()}`,
-      title: clean,
-      status: 'active',
-      updatedAt: Date.now(),
-      carId: activeCarId,
-      description: editingProject?.description || null,
-      category: editingProject?.category || null,
-      budgetPlanned: editingProject?.budgetPlanned ?? null
+      id: projectRow.id,
+      title: projectRow.title,
+      status: projectRow.status || 'active',
+      updatedAt: projectRow.updated_at ? new Date(projectRow.updated_at).getTime() : Date.now(),
+      carId: projectRow.car_id,
+      description: projectRow.description,
+      category: projectRow.category,
+      budgetPlanned:
+        projectRow.budget_planned !== null && projectRow.budget_planned !== undefined
+          ? Number(projectRow.budget_planned)
+          : null
     };
     setProjects((prev) => [project, ...prev]);
     setActiveProjectId(project.id);
@@ -1178,22 +1019,189 @@ export default function App() {
       return next;
     });
     setActiveProjectId(projectId);
+    if (userId) {
+      supabase
+        .from('projects')
+        .update({ updated_at: new Date().toISOString() })
+        .eq('id', projectId)
+        .eq('user_id', userId);
+    }
   };
 
-  const handleAddLog = (log: ServiceLog) => {
-    // If mileage increased in log, update car
+  const handleAddLog = async (log: ServiceLog, photos: string[]) => {
+    if (!activeCarId || !userId) return false;
     if (car && log.mileage > car.mileage) {
-      handleUpdateMileage(log.mileage); // This triggers the audit log too!
+      await handleUpdateMileage(log.mileage);
     }
-    touchProject(log.projectId);
-    setLogs([log, ...logs]);
+    const { data: logRow, error: logError } = await supabase
+      .from('logs')
+      .insert({
+        user_id: userId,
+        car_id: activeCarId,
+        title: log.title,
+        date: log.date,
+        mileage: log.mileage,
+        cost: log.cost,
+        type: log.type,
+        notes: log.notes,
+        is_system_event: log.isSystemEvent,
+        project_id: log.projectId || null
+      })
+      .select('*')
+      .single();
+    if (logError || !logRow) {
+      Alert.alert('Save failed', logError?.message || 'Could not save log.');
+      return false;
+    }
+
+    const createdLog: ServiceLog = {
+      id: logRow.id,
+      title: logRow.title,
+      date: logRow.date,
+      mileage: logRow.mileage || 0,
+      cost: logRow.cost || 0,
+      type: logRow.type,
+      notes: logRow.notes || '',
+      projectId: logRow.project_id || null,
+      isSystemEvent: !!logRow.is_system_event
+    };
+    setLogs((prev) => [createdLog, ...prev]);
+    touchProject(createdLog.projectId);
+
+    if (photos.length) {
+      try {
+        const uploads = await Promise.all(
+          photos.map((uri) =>
+            resizeAndUploadImage(uri, `${userId}/cars/${activeCarId}/logs/${createdLog.id}`)
+          )
+        );
+        const { data: mediaRows } = await supabase
+          .from('log_media')
+          .insert(
+            uploads.map((upload) => ({
+              user_id: userId,
+              car_id: activeCarId,
+              log_id: createdLog.id,
+              uri: upload.path,
+              type: 'image'
+            }))
+          )
+          .select('*');
+        if (mediaRows?.length) {
+          const signedMap = new Map(uploads.map((u) => [u.path, u.signedUrl]));
+          setLogMedia((prev) => [
+            ...mediaRows.map((row: any) => ({
+              id: row.id,
+              logId: row.log_id,
+              uri: signedMap.get(row.uri) || row.uri,
+              type: (row.type as 'image') || 'image',
+              carId: row.car_id,
+              storagePath: row.uri
+            })),
+            ...prev
+          ]);
+        }
+      } catch (uploadError: any) {
+        Alert.alert('Upload failed', uploadError?.message || 'Could not upload images.');
+      }
+    }
+    return true;
+  };
+
+  const handleUpdateLog = async (log: ServiceLog, photos: string[]) => {
+    if (!activeCarId || !userId) return false;
+    if (car && log.mileage > car.mileage) {
+      await handleUpdateMileage(log.mileage);
+    }
+    const { data: logRow, error } = await supabase
+      .from('logs')
+      .update({
+        title: log.title,
+        date: log.date,
+        mileage: log.mileage,
+        cost: log.cost,
+        type: log.type,
+        notes: log.notes,
+        is_system_event: log.isSystemEvent,
+        project_id: log.projectId || null
+      })
+      .eq('id', log.id)
+      .eq('user_id', userId)
+      .select('*')
+      .single();
+    if (error || !logRow) {
+      Alert.alert('Update failed', error?.message || 'Could not update log.');
+      return false;
+    }
+
+    const updatedLog: ServiceLog = {
+      id: logRow.id,
+      title: logRow.title,
+      date: logRow.date,
+      mileage: logRow.mileage || 0,
+      cost: logRow.cost || 0,
+      type: logRow.type,
+      notes: logRow.notes || '',
+      projectId: logRow.project_id || null,
+      isSystemEvent: !!logRow.is_system_event
+    };
+    setLogs((prev) => prev.map((item) => (item.id === log.id ? updatedLog : item)));
+    touchProject(updatedLog.projectId);
+
+    const oldPaths = logMedia
+      .filter((m) => m.logId === log.id)
+      .map((m) => m.storagePath)
+      .filter(Boolean) as string[];
+    await supabase.from('log_media').delete().eq('log_id', log.id).eq('user_id', userId);
+    await removeStoragePaths(oldPaths);
+
+    if (photos.length) {
+      try {
+        const uploads = await Promise.all(
+          photos.map((uri) =>
+            resizeAndUploadImage(uri, `${userId}/cars/${activeCarId}/logs/${log.id}`)
+          )
+        );
+        const { data: mediaRows } = await supabase
+          .from('log_media')
+          .insert(
+            uploads.map((upload) => ({
+              user_id: userId,
+              car_id: activeCarId,
+              log_id: log.id,
+              uri: upload.path,
+              type: 'image'
+            }))
+          )
+          .select('*');
+        if (mediaRows?.length) {
+          const signedMap = new Map(uploads.map((u) => [u.path, u.signedUrl]));
+          setLogMedia((prev) => [
+            ...prev.filter((m) => m.logId !== log.id),
+            ...mediaRows.map((row: any) => ({
+              id: row.id,
+              logId: row.log_id,
+              uri: signedMap.get(row.uri) || row.uri,
+              type: (row.type as 'image') || 'image',
+              carId: row.car_id,
+              storagePath: row.uri
+            }))
+          ]);
+        }
+      } catch (uploadError: any) {
+        Alert.alert('Upload failed', uploadError?.message || 'Could not upload images.');
+      }
+    } else {
+      setLogMedia((prev) => prev.filter((m) => m.logId !== log.id));
+    }
+    return true;
   };
 
   const addMediaToProject = async (projectId: string, source: 'camera' | 'library') => {
-    if (!activeCarId) return;
+    if (!activeCarId || !userId) return;
     try {
       const options: any = {
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ImagePicker.MediaType?.Images ?? ImagePicker.MediaTypeOptions.Images,
         quality: 0.6,
         allowsMultipleSelection: source === 'library',
       };
@@ -1209,16 +1217,40 @@ export default function App() {
         result = await ImagePicker.launchImageLibraryAsync(options);
       }
       if (!result.canceled && result.assets?.length) {
-        setProjectMedia((prev) => [
-          ...result.assets.map((asset: any) => ({
-            id: `media-${Date.now()}-${asset.uri}`,
-            projectId,
-            uri: asset.uri,
-            type: 'image',
-            carId: activeCarId!
-          })),
-          ...prev
-        ]);
+        const uploads = await Promise.all(
+          result.assets.map((asset: any) =>
+            resizeAndUploadImage(asset.uri, `${userId}/cars/${activeCarId}/projects/${projectId}`)
+          )
+        );
+        const payload = uploads.map((upload) => ({
+          user_id: userId,
+          car_id: activeCarId,
+          project_id: projectId,
+          uri: upload.path,
+          type: 'image'
+        }));
+        const { data: mediaRows, error } = await supabase
+          .from('project_media')
+          .insert(payload)
+          .select('*');
+        if (error) {
+          Alert.alert('Upload failed', error.message);
+          return;
+        }
+        if (mediaRows?.length) {
+          const signedMap = new Map(uploads.map((u) => [u.path, u.signedUrl]));
+          setProjectMedia((prev) => [
+            ...mediaRows.map((row: any) => ({
+              id: row.id,
+              projectId: row.project_id,
+              uri: signedMap.get(row.uri) || row.uri,
+              type: (row.type as 'image') || 'image',
+              carId: row.car_id,
+              storagePath: row.uri
+            })),
+            ...prev
+          ]);
+        }
       }
     } catch (error) {
       console.warn('Failed to add media', error);
@@ -1233,12 +1265,24 @@ export default function App() {
       {
         text: 'Delete',
         style: 'destructive',
-        onPress: () => {
+        onPress: async () => {
+          const projectMediaPaths = projectMedia
+            .filter((m) => m.projectId === projectId)
+            .map((m) => m.storagePath)
+            .filter(Boolean) as string[];
           setProjects((prev) => prev.filter((p) => p.id !== projectId));
           setProjectMedia((prev) => prev.filter((m) => m.projectId !== projectId));
           setLogs((prev) => prev.map((l) => (l.projectId === projectId ? { ...l, projectId: null } : l)));
           if (activeProjectId === projectId) setActiveProjectId(null);
           closeProjectDetail();
+          if (userId) {
+            await supabase.from('logs').update({ project_id: null }).eq('project_id', projectId).eq('user_id', userId);
+            await supabase.from('project_media').delete().eq('project_id', projectId).eq('user_id', userId);
+            await supabase.from('projects').delete().eq('id', projectId).eq('user_id', userId);
+            if (projectMediaPaths.length) {
+              await removeStoragePaths(projectMediaPaths);
+            }
+          }
         }
       }
     ]);
@@ -1250,6 +1294,13 @@ export default function App() {
         .map((p) => (p.id === projectId ? { ...p, status, updatedAt: Date.now() } : p))
         .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
     );
+    if (userId) {
+      supabase
+        .from('projects')
+        .update({ status, updated_at: new Date().toISOString() })
+        .eq('id', projectId)
+        .eq('user_id', userId);
+    }
   };
 
   const handleSaveNickname = (value: string) => {
@@ -1258,6 +1309,9 @@ export default function App() {
     const updated = { ...car, nickname };
     setCar(updated);
     setCars((prev) => prev.map((c) => (c.id === car.id ? { ...c, nickname } : c)));
+    if (userId) {
+      supabase.from('cars').update({ nickname }).eq('id', car.id).eq('user_id', userId);
+    }
   };
 
   const handleEditLog = (log: ServiceLog) => {
@@ -1274,37 +1328,77 @@ export default function App() {
       {
         text: 'Delete',
         style: 'destructive',
-        onPress: () => {
+        onPress: async () => {
+          const logMediaPaths = logMedia
+            .filter((m) => m.logId === log.id)
+            .map((m) => m.storagePath)
+            .filter(Boolean) as string[];
           setLogs((prev) => prev.filter((item) => item.id !== log.id));
           setLogMedia((prev) => prev.filter((m) => m.logId !== log.id));
           if (editingLog?.id === log.id) {
             setEditingLog(null);
+          }
+          if (userId) {
+            await supabase.from('log_media').delete().eq('log_id', log.id).eq('user_id', userId);
+            await supabase.from('logs').delete().eq('id', log.id).eq('user_id', userId);
+            if (logMediaPaths.length) {
+              await removeStoragePaths(logMediaPaths);
+            }
           }
         }
       }
     ]);
   };
 
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState !== 'active') return;
+      setView('onboarding');
+      pagerRef.current?.setPage(0);
+    });
+
+    return () => subscription.remove();
+  }, [car]);
+
+  const handleSignOut = () => {
+    Alert.alert('Sign out', 'Sign out of your account?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Sign out',
+        style: 'destructive',
+        onPress: async () => {
+          const { error } = await supabase.auth.signOut();
+          if (error) {
+            Alert.alert('Sign out failed', error.message);
+          } else {
+            setUserId(null);
+            setUserEmail(null);
+            setCars([]);
+            setCar(null);
+            setActiveCarId(null);
+            setLogs([]);
+            setProjects([]);
+            setDocs(DEFAULT_DOCS);
+            setLogMedia([]);
+            setProjectMedia([]);
+            setActiveProjectId(null);
+            setView('onboarding');
+            setDbReady(false);
+          }
+        },
+      },
+    ]);
+  };
+
   const deleteCar = () => {
     Alert.alert("Nuclear Option", "Delete this car and all history?", [
       { text: "Cancel", style: 'cancel' },
-      { text: "Delete", style: 'destructive', onPress: () => {
+      { text: "Delete", style: 'destructive', onPress: async () => {
         setCar(null);
         setLogs([]);
         setView('onboarding');
-        if (dbReady && dbRef.current && activeCarId) {
-          const db = dbRef.current;
-          const removedId = activeCarId;
-          enqueueWrite(async () => {
-            await db.withExclusiveTransactionAsync(async (tx: any) => {
-              await tx.runAsync('DELETE FROM car WHERE id = ?', [removedId]);
-              await tx.runAsync('DELETE FROM logs WHERE carId = ?', [removedId]);
-              await tx.runAsync('DELETE FROM docs WHERE carId = ?', [removedId]);
-              await tx.runAsync('DELETE FROM projects WHERE carId = ?', [removedId]);
-              await tx.runAsync('DELETE FROM log_media WHERE carId = ?', [removedId]);
-              await tx.runAsync('DELETE FROM project_media WHERE carId = ?', [removedId]);
-            });
-          });
+        if (userId && activeCarId) {
+          await supabase.from('cars').delete().eq('id', activeCarId).eq('user_id', userId);
         }
         const remainingCars = cars.filter((item) => item.id !== activeCarId);
         setCars(remainingCars);
@@ -1406,6 +1500,7 @@ export default function App() {
                     onChangeUnits={setUnits}
                     onChangeAppTheme={setAppTheme}
                     onEditNickname={() => setModals((prev) => ({ ...prev, nickname: true }))}
+                    onSignOut={handleSignOut}
                     onClose={closeSettings}
                   />
                 </Animated.View>
@@ -1429,25 +1524,11 @@ export default function App() {
                 <Animated.View style={[styles.addLogOverlay, { transform: [{ translateX: addLogX }] }]}>
                   <AddLogModal
                     onClose={closeAddLog}
-                    onSave={(log: ServiceLog, photos: string[]) => {
-                      if (editingLog) {
-                        setLogs((prev) => prev.map((item) => (item.id === log.id ? { ...item, ...log } : item)));
-                      } else {
-                        handleAddLog(log);
-                      }
-                      if (activeCarId) {
-                        setLogMedia((prev) => [
-                          ...prev.filter((m) => m.logId !== log.id),
-                          ...photos.map((uri) => ({
-                            id: `media-${Date.now()}-${uri}`,
-                            logId: log.id,
-                            uri,
-                            type: 'image',
-                            carId: activeCarId,
-                          }))
-                        ]);
-                      }
-                      touchProject(log.projectId);
+                    onSave={async (log: ServiceLog, photos: string[]) => {
+                      const ok = editingLog
+                        ? await handleUpdateLog(log, photos)
+                        : await handleAddLog(log, photos);
+                      if (!ok) return;
                       closeAddLog();
                       setSelectedLogType('service');
                     }}
@@ -1466,7 +1547,7 @@ export default function App() {
                         title: '',
                         status: 'active',
                         updatedAt: Date.now(),
-                        carId: activeCarId || 0,
+                        carId: activeCarId || '',
                         description: null,
                         category: null,
                         budgetPlanned: null
@@ -1489,23 +1570,31 @@ export default function App() {
                       closeTypes();
                     }}
                     onClose={closeTypes}
-                    onAddType={(value: string) => {
+                    onAddType={async (value: string) => {
                       const clean = value.trim();
                       if (!clean) return;
                       setLogTypes((prev) => {
                         if (prev.includes(clean)) return prev;
                         return [...prev, clean];
                       });
+                      if (userId) {
+                        await supabase.from('types').insert({ user_id: userId, name: clean });
+                      }
                     }}
-                    onRemoveType={(value: string) =>
-                      setLogTypes((prev) => {
-                        const next = prev.filter((type) => type !== value);
-                        if (value === selectedLogType) {
-                          setSelectedLogType(next[0] || 'service');
+                    onRemoveType={async (value: string) => {
+                      const next = logTypes.filter((type) => type !== value);
+                      const finalTypes = next.length ? next : ['service'];
+                      if (value === selectedLogType) {
+                        setSelectedLogType(finalTypes[0] || 'service');
+                      }
+                      setLogTypes(finalTypes);
+                      if (userId) {
+                        await supabase.from('types').delete().eq('user_id', userId).eq('name', value);
+                        if (!next.length) {
+                          await supabase.from('types').insert({ user_id: userId, name: 'service' });
                         }
-                        return next.length ? next : ['service'];
-                      })
-                    }
+                      }
+                    }}
                   />
                 </Animated.View>
               )}
@@ -1515,20 +1604,15 @@ export default function App() {
                     visible={modals.projectForm}
                     project={editingProject}
                     onClose={closeProjectForm}
-                    onSave={(proj: Partial<Project>) => {
+                    onSave={async (proj: Partial<Project>) => {
                       const cleanTitle = (proj.title || '').trim();
                       if (!cleanTitle) return;
-                      const project: Project = {
-                        id: `project-${Date.now()}`,
-                        title: cleanTitle,
-                        status: 'active',
-                        updatedAt: Date.now(),
-                        carId: activeCarId || 0,
+                      const project = await handleCreateProject(cleanTitle, {
                         description: (proj.description || '').trim() || null,
                         category: (proj.category || '').trim() || null,
                         budgetPlanned: proj.budgetPlanned ?? null
-                      };
-                      setProjects((prev) => [project, ...prev]);
+                      });
+                      if (!project) return;
                       setDraftProjectId(project.id);
                       openProjectDetail(project.id);
                       closeProjectForm();
@@ -1586,8 +1670,12 @@ export default function App() {
                       {
                         text: 'Delete',
                         style: 'destructive',
-                        onPress: () => {
+                        onPress: async () => {
+                          const projectItem = projectMedia.find((m) => m.id === id);
+                          const logItem = logMedia.find((m) => m.id === id);
+                          const storagePaths = [projectItem?.storagePath, logItem?.storagePath].filter(Boolean) as string[];
                           setProjectMedia((prev) => prev.filter((m) => m.id !== id));
+                          setLogMedia((prev) => prev.filter((m) => m.id !== id));
                           setProjectMediaViewer((prev) => {
                             if (!prev) return null;
                             const nextMedia = prev.media.filter((m) => m.id !== id);
@@ -1595,6 +1683,13 @@ export default function App() {
                             const nextIndex = Math.min(prev.index, nextMedia.length - 1);
                             return { ...prev, media: nextMedia, index: nextIndex };
                           });
+                          if (userId) {
+                            await supabase.from('project_media').delete().eq('id', id).eq('user_id', userId);
+                            await supabase.from('log_media').delete().eq('id', id).eq('user_id', userId);
+                            if (storagePaths.length) {
+                              await removeStoragePaths(storagePaths);
+                            }
+                          }
                         }
                       }
                     ]);
@@ -1673,7 +1768,7 @@ export default function App() {
           }
           keyboard="numeric"
           onClose={() => setModals({...modals, mileage: false})}
-          onSave={(val) => handleUpdateMileage(toKilometers(parseInt(val) || 0, units))}
+          onSave={(val) => void handleUpdateMileage(toKilometers(parseInt(val) || 0, units))}
           units={units}
         />
             </SafeAreaView>
@@ -1685,6 +1780,7 @@ export default function App() {
             <Onboarding
               onRegister={handleRegister}
               cars={cars}
+              userEmail={userEmail}
               onSelectCar={(selected: Car) => {
                 setIsHydrating(true);
                 setCar(selected);
@@ -2060,7 +2156,18 @@ const ProjectsScreen = ({
   );
 };
 
-const ConfigScreen = ({ car, onDelete, onChangeCar, units, appTheme, onChangeUnits, onChangeAppTheme, onEditNickname, onClose }: any) => {
+const ConfigScreen = ({
+  car,
+  onDelete,
+  onChangeCar,
+  units,
+  appTheme,
+  onChangeUnits,
+  onChangeAppTheme,
+  onEditNickname,
+  onSignOut,
+  onClose,
+}: any) => {
   const { theme } = useTheme();
   const styles = useStyles();
   const safeCar = car ?? {};
@@ -2133,6 +2240,14 @@ const ConfigScreen = ({ car, onDelete, onChangeCar, units, appTheme, onChangeUni
       <TouchableOpacity style={styles.settingsChoiceRow} onPress={() => onChangeAppTheme('dark')}>
         <Text style={styles.settingsChoiceLabel}>Dark</Text>
         {appTheme === 'dark' && <Ionicons name="checkmark" size={18} color={theme.primary} />}
+      </TouchableOpacity>
+    </View>
+
+    <Text style={styles.settingsHeader}>Account</Text>
+    <View style={styles.settingsGroup}>
+      <TouchableOpacity style={styles.settingsRow} onPress={onSignOut}>
+        <Text style={styles.settingsLabel}>Sign out</Text>
+        <Ionicons name="log-out-outline" size={18} color={theme.textDim} />
       </TouchableOpacity>
     </View>
 
@@ -2773,7 +2888,7 @@ const AddLogModal = ({
   const pickPhotos = async (source: 'camera' | 'library') => {
     try {
       const options: any = {
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ImagePicker.MediaType?.Images ?? ImagePicker.MediaTypeOptions.Images,
         quality: 0.6,
         allowsMultipleSelection: source === 'library',
       };
@@ -3093,11 +3208,12 @@ const TypesPage = ({ types, selectedType, onSelectType, onAddType, onRemoveType,
   );
 };
 
-const Onboarding = ({ onRegister, cars, onSelectCar }: any) => {
+const Onboarding = ({ onRegister, cars, userEmail, onSelectCar }: any) => {
   const { theme, statusBarStyle } = useTheme();
   const styles = useStyles();
   const [plate, setPlate] = useState('');
   const [load, setLoad] = useState(false);
+  const emailLabel = userEmail ? `Signed in as ${userEmail}` : null;
   return (
     <KeyboardAvoidingView
       style={styles.container}
@@ -3112,6 +3228,7 @@ const Onboarding = ({ onRegister, cars, onSelectCar }: any) => {
           </View>
           <Text style={styles.onboardingTitle}>Glovebox</Text>
           <Text style={styles.onboardingSub}>Log service history in seconds.</Text>
+          {!!emailLabel && <Text style={styles.onboardingSub}>{emailLabel}</Text>}
           {!!cars?.length && (
             <View style={styles.onboardingList}>
               <View style={styles.onboardingListGroup}>
@@ -3159,186 +3276,3 @@ const Onboarding = ({ onRegister, cars, onSelectCar }: any) => {
     </KeyboardAvoidingView>
   );
 };
-
-// --- STYLES ---
-
-const createStyles = (theme: typeof LIGHT_THEME) => StyleSheet.create({
-  container: { flex: 1, backgroundColor: theme.bg },
-  appLayer: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
-  onboardingLayer: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
-  screenContainer: { flex: 1, padding: 20, backgroundColor: theme.bg },
-  onboardingWrap: { justifyContent: 'center', alignItems: 'center', padding: 24 },
-  onboardingCard: { width: '100%', maxWidth: 360, backgroundColor: theme.card, borderRadius: 18, padding: 20, borderWidth: 1, borderColor: theme.cardBorder, alignItems: 'center', shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 12, shadowOffset: { width: 0, height: 8 }, elevation: 2 },
-  onboardingIcon: { width: 56, height: 56, borderRadius: 16, backgroundColor: theme.surface, alignItems: 'center', justifyContent: 'center', marginBottom: 14, borderWidth: 1, borderColor: theme.cardBorder },
-  onboardingTitle: { fontSize: 28, fontWeight: '700', color: theme.text },
-  onboardingSub: { color: theme.textDim, marginTop: 4, marginBottom: 20 },
-  onboardingList: { width: '100%', marginBottom: 16 },
-  onboardingListGroup: { backgroundColor: theme.surface, borderRadius: 14, borderWidth: 1, borderColor: theme.cardBorder, overflow: 'hidden' },
-  onboardingRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10, gap: 10 },
-  onboardingLogo: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center' },
-  onboardingLogoText: { color: theme.primary, fontSize: 10, fontWeight: '700' },
-  onboardingRowTitle: { color: theme.text, fontWeight: '600', fontSize: 14 },
-  onboardingRowSub: { color: theme.textDim, fontSize: 12, marginTop: 2 },
-  onboardingDivider: { height: 1, backgroundColor: theme.cardBorder },
-  onboardingInput: { width: '100%', textAlign: 'center', fontSize: 22 },
-  onboardingBtn: { width: '100%' },
-  
-  // Hero
-  heroContainer: { backgroundColor: theme.card, margin: 16, padding: 16, borderRadius: 14, borderWidth: 1, borderColor: theme.cardBorder, shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 12, shadowOffset: { width: 0, height: 8 }, elevation: 2 },
-  heroLogo: { fontSize: 16, color: theme.primary, fontWeight: '600', letterSpacing: 0.6, textTransform: 'uppercase' },
-  brandLogoWrap: { width: 42, height: 42, alignItems: 'center', justifyContent: 'center' },
-  headerBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 },
-  headerTitle: { color: theme.text, fontSize: 28, fontWeight: '700' },
-  headerPill: { backgroundColor: theme.primary, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, flexDirection: 'row', alignItems: 'center', gap: 6 },
-  headerPillText: { color: 'white', fontWeight: '600', fontSize: 12 },
-  heroTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  heroNickname: { color: theme.textDim, fontStyle: 'italic', marginTop: 4 },
-  heroBottomRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 10 },
-  heroBrand: { color: theme.primary, fontWeight: '600', letterSpacing: 0.6, textTransform: 'uppercase', fontSize: 16 },
-  heroModel: { fontSize: 24, fontWeight: '700', color: theme.text, marginTop: -2 },
-  heroLinePlate: { color: theme.textDim, fontWeight: '600', fontSize: 15, letterSpacing: 0.4 },
-  heroStatus: { color: theme.textDim, fontSize: 12, marginTop: 6 },
-  heroChangeText: { color: theme.primary, fontWeight: '600', fontSize: 13 },
-  heroMetaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8 },
-  heroMeta: { color: theme.textDim, fontSize: 12, fontWeight: '600' },
-  heroMetaDot: { color: theme.textDim, paddingHorizontal: 6 },
-  mileageRow: { marginTop: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: theme.surface, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 12, borderWidth: 1, borderColor: theme.cardBorder },
-  mileageLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  mileageText: { color: theme.text, fontWeight: '600', fontSize: 14 },
-
-  // Sections
-  section: { marginBottom: 24, paddingHorizontal: 20 },
-  sectionTitle: { color: theme.textDim, fontSize: 12, fontWeight: '700', marginBottom: 12, letterSpacing: 0.4 },
-  projectCard: { backgroundColor: theme.card, borderRadius: 16, borderWidth: 1, borderColor: theme.cardBorder, padding: 16, marginBottom: 20 },
-  projectBadge: { color: theme.textDim, fontSize: 10, fontWeight: '700', letterSpacing: 0.4 },
-  projectMeta: { color: theme.textDim, fontSize: 12 },
-  projectStats: { color: theme.text, fontWeight: '600', marginTop: 4 },
-  tagButton: { padding: 12, borderRadius: 12, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-  projectListItem: { padding: 16, borderRadius: 16, borderWidth: 1, borderColor: theme.cardBorder, backgroundColor: theme.card, marginBottom: 12 },
-  projectRow: { flexDirection: 'row', alignItems: 'stretch' },
-  projectStatusStrip: { width: 4, borderRadius: 4 },
-  projectContent: { flex: 1, marginLeft: 12 },
-  projectTopRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
-  projectBottomRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: 10 },
-  tabBarRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 20, paddingBottom: 10 },
-  tabPill: { flex: 1, paddingVertical: 8, borderRadius: 999, borderWidth: 1, borderColor: theme.cardBorder, backgroundColor: theme.surface, alignItems: 'center' },
-  tabPillText: { color: theme.text, fontWeight: '600', fontSize: 12 },
-  sheetOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' },
-  sheetContainer: { backgroundColor: theme.card, paddingTop: 12, paddingBottom: 16, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 16 },
-  sheetHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: theme.cardBorder, alignSelf: 'center', marginBottom: 8 },
-  sheetItem: { alignItems: 'center' },
-  sheetPrimaryBtn: { backgroundColor: theme.primary, borderRadius: 12, paddingVertical: 12, marginBottom: 10 },
-  sheetPrimaryText: { color: 'white', fontSize: 16, fontWeight: '700' },
-  sheetDangerBtn: { backgroundColor: theme.surface, borderRadius: 12, paddingVertical: 12, borderWidth: 1, borderColor: theme.cardBorder },
-  sheetDangerText: { color: theme.danger, fontSize: 16, fontWeight: '700' },
-  projectPill: { marginTop: 8, alignSelf: 'flex-start', flexDirection: 'row', gap: 6, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.cardBorder },
-  chip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, borderWidth: 1 },
-  fullscreenOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'center', alignItems: 'center' },
-  fullscreenHeader: { position: 'absolute', top: 40, left: 20, right: 20, flexDirection: 'row', justifyContent: 'space-between', zIndex: 2 },
-  fullscreenImage: { width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center' },
-  
-  // Grid
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
-  specBox: { width: '31%', backgroundColor: theme.card, padding: 12, borderRadius: 16, borderWidth: 1, borderColor: theme.cardBorder, minHeight: 90 },
-  specLabel: { color: theme.textDim, fontSize: 11, marginTop: 'auto' },
-  specValue: { color: theme.text, fontWeight: '600', fontSize: 13, marginTop: 2 },
-
-  // Tiles
-  tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
-  infoTile: { width: '48%', backgroundColor: theme.card, padding: 14, borderRadius: 18, borderWidth: 1, borderColor: theme.cardBorder },
-  infoTileHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10 },
-  infoTileLabel: { color: theme.textDim, fontSize: 11, fontWeight: '700' },
-  infoTileValue: { color: theme.text, fontSize: 18, fontWeight: '700' },
-  infoTileSub: { color: theme.textDim, fontSize: 10, marginTop: 4 },
-
-  // Alerts
-  alertCard: { width: 140, backgroundColor: theme.card, marginRight: 12, padding: 16, borderRadius: 16, borderTopWidth: 4 },
-  alertTitle: { color: theme.text, fontWeight: '600', fontSize: 14 },
-  alertValue: { fontSize: 18, fontWeight: '700', marginVertical: 4 },
-  alertSub: { color: theme.textDim, fontSize: 10 },
-
-  // Logs
-  logRow: { flexDirection: 'row', marginBottom: 20 },
-  logTimelineLine: { width: 2, backgroundColor: theme.cardBorder, position: 'absolute', left: 15, top: 0, bottom: -20 },
-  logIconParams: { width: 32, height: 32, borderRadius: 16, backgroundColor: theme.bg, borderWidth: 2, alignItems: 'center', justifyContent: 'center', zIndex: 2 },
-  logContent: { flex: 1, marginLeft: 12, backgroundColor: theme.card, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: theme.cardBorder },
-  logTitle: { color: theme.text, fontWeight: '600' },
-  logDate: { color: theme.textDim, fontSize: 10 },
-  logNotes: { color: theme.textDim, fontSize: 12, marginVertical: 4 },
-  logMeta: { color: theme.primary, fontSize: 10, fontWeight: '600' },
-  logCost: { color: theme.danger, fontSize: 12, fontWeight: '600' },
-
-  // Tab Bar
-  tabBarContainer: { position: 'absolute', left: 0, right: 0, bottom: 0 },
-  tabBar: { flex: 1, backgroundColor: theme.tabBarBg, borderTopWidth: 1, borderColor: theme.tabBarBorder },
-  tabBarContent: { height: 49, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-evenly', paddingHorizontal: 12, paddingTop: 6 },
-  tabBtn: { flex: 1, alignItems: 'center', justifyContent: 'center', height: '100%' },
-  tabLabel: { fontSize: 10, fontWeight: '500', marginTop: 2 },
-
-  // Forms
-  input: { backgroundColor: theme.card, color: theme.text, padding: 16, borderRadius: 12, marginBottom: 16, borderWidth: 1, borderColor: theme.cardBorder },
-  inpLabel: { color: theme.textDim, fontSize: 11, fontWeight: '600', marginBottom: 8 },
-  mainBtn: { backgroundColor: theme.primary, padding: 16, borderRadius: 14, alignItems: 'center' },
-  primaryBtn: { backgroundColor: theme.primary, padding: 12, borderRadius: 12, alignItems: 'center' },
-  secondaryBtn: { backgroundColor: theme.surface, padding: 12, borderRadius: 12, alignItems: 'center', borderWidth: 1 },
-  btnTxt: { fontWeight: '600', color: 'white' },
-  
-  // Vault
-  docRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: theme.card, padding: 16, borderRadius: 16, marginBottom: 12, borderWidth: 1, borderColor: theme.cardBorder },
-  docIcon: { width: 40, height: 40, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginRight: 16 },
-  docTitle: { color: theme.text, fontWeight: '600', fontSize: 16 },
-  docSub: { color: theme.textDim, fontSize: 12 },
-  dashedBtn: { borderWidth: 1, borderColor: theme.cardBorder, borderStyle: 'dashed', borderRadius: 16, padding: 16, alignItems: 'center', marginTop: 10 },
-
-  // Config
-  pageTitle: { fontSize: 28, fontWeight: '700', color: theme.text, marginBottom: 4 },
-  pageTitleSmall: { fontSize: 18, fontWeight: '700', color: theme.text },
-  pageSub: { color: theme.textDim, marginBottom: 0 },
-  pageHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 },
-  headerIconBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: theme.primary, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 6, shadowOffset: { width: 0, height: 3 }, elevation: 3 },
-  headerIconBtnGhost: { width: 36, height: 36, borderRadius: 18, backgroundColor: theme.card, borderWidth: 1, borderColor: theme.cardBorder, alignItems: 'center', justifyContent: 'center' },
-  settingsHeader: { color: theme.textDim, fontSize: 12, fontWeight: '600', marginTop: 16, marginBottom: 8, paddingHorizontal: 2, textTransform: 'uppercase', letterSpacing: 0.4 },
-  settingsGroup: { backgroundColor: theme.card, borderRadius: 12, borderWidth: 1, borderColor: theme.cardBorder, overflow: 'hidden', marginBottom: 12 },
-  settingsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14 },
-  settingsDivider: { height: 1, backgroundColor: theme.cardBorder },
-  settingsLabel: { color: theme.text, fontSize: 16 },
-  settingsValue: { color: theme.textDim, fontSize: 16 },
-  settingsDestructive: { color: theme.danger, fontSize: 16, fontWeight: '600' },
-  settingsChoiceRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14 },
-  settingsChoiceLabel: { color: theme.text, fontSize: 16 },
-
-  // Modals
-  modalBase: { flex: 1, paddingTop: 60 },
-  modalHeader: { paddingHorizontal: 20, paddingBottom: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  modalH1: { fontSize: 20, fontWeight: '700', color: theme.text },
-  modalSaveText: { color: theme.primary, fontWeight: '600', fontSize: 16 },
-  modalCancelText: { color: theme.primary, fontWeight: '600', fontSize: 16 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'center', padding: 40 },
-  modalPopup: { backgroundColor: theme.card, padding: 24, borderRadius: 20, borderWidth: 1, borderColor: theme.cardBorder },
-  popupTitle: { color: theme.text, fontSize: 18, fontWeight: '600', marginBottom: 16 },
-  popupHelp: { color: theme.textDim, fontSize: 12, marginTop: 6 },
-  popupBtn: { flex: 1, padding: 12, borderRadius: 12, alignItems: 'center' },
-  addLogOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: theme.bg, zIndex: 20 },
-  logForm: { padding: 20, paddingBottom: 40 },
-  formSection: { marginBottom: 18 },
-  sectionHeader: { color: theme.textDim, fontSize: 12, fontWeight: '600', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.4 },
-  listGroup: { backgroundColor: theme.card, borderRadius: 12, borderWidth: 1, borderColor: theme.cardBorder, overflow: 'hidden' },
-  listRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 16 },
-  listLabel: { color: theme.text, fontSize: 15, fontWeight: '500', width: 80 },
-  listValue: { color: theme.text, fontSize: 16, textAlign: 'right' },
-  listValueRow: { flex: 1, flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: 6 },
-  listInput: { flex: 1, textAlign: 'right', color: theme.text, fontSize: 16 },
-  typeRow: { flex: 1, flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 },
-  typePill: { paddingVertical: 6, paddingHorizontal: 10, borderRadius: 999, borderWidth: 1, borderColor: theme.cardBorder, backgroundColor: theme.surface },
-  typePillActive: { backgroundColor: theme.primary, borderColor: theme.primary },
-  typePillText: { color: theme.textDim, fontSize: 12, fontWeight: '600' },
-  typePillTextActive: { color: 'white' },
-  typeSelectBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingRight: 12 },
-  typeNameRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 },
-  typeName: { color: theme.text, fontSize: 15, fontWeight: '500' },
-  swipeDelete: { width: 64, backgroundColor: theme.danger, alignItems: 'center', justifyContent: 'center' },
-  listDivider: { height: 1, backgroundColor: theme.cardBorder },
-  notesInput: { minHeight: 120, paddingHorizontal: 14, paddingVertical: 12, color: theme.text, fontSize: 15, textAlignVertical: 'top' },
-  datePickerRow: { paddingHorizontal: 12, paddingBottom: 8, backgroundColor: theme.card },
-  formFooter: { position: 'absolute', left: 0, right: 0, bottom: 0, padding: 16, backgroundColor: theme.bg, borderTopWidth: 1, borderTopColor: theme.cardBorder, flexDirection: 'row', gap: 12 }
-});
