@@ -332,7 +332,7 @@
       const SUPABASE_URL = "https://ltglvwkrayxghitsthjk.supabase.co";
       const SUPABASE_ANON_KEY =
         "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx0Z2x2d2tyYXl4Z2hpdHN0aGprIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg4MDc3NzQsImV4cCI6MjA4NDM4Mzc3NH0.knoKHvMyyU2gJCPhHEtjg6TSFiwpAdC5ReCkPqDPdU8";
-      const RESET_REDIRECT_URL = "https://elias1328.github.io/Hanskerommet/forgot-password";
+      const RESET_REDIRECT_URL = "https://elias1328.github.io/Hanskerommet/forgot-password/";
 
       const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -377,6 +377,12 @@
       };
 
       const handleRecovery = async () => {
+        const errorDesc = hashParams.get("error_description") || params.get("error_description");
+        if (errorDesc) {
+          showStatus("Lenken er ugyldig eller utløpt. Be om en ny.", "err");
+          showRequestForm();
+          return;
+        }
         if (!code && !hashParams.toString()) {
           showRequestForm();
           return;
