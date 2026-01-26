@@ -7,19 +7,31 @@ import { AuthShell, useAuthStyles } from '@/components/auth/auth-shell';
 
 export default function SignInScreen() {
   const { styles } = useAuthStyles();
-  const [email, setEmail] = React.useState('');
+  const [identifier, setIdentifier] = React.useState('');
   const [password, setPassword] = React.useState('');
   const [loading, setLoading] = React.useState(false);
 
   const handleSignIn = async () => {
-    if (!email || !password) {
-      Alert.alert('Mangler informasjon', 'Vennligst skriv inn e-post og passord.');
+    if (!identifier || !password) {
+      Alert.alert('Mangler informasjon', 'Vennligst skriv inn e-post/brukernavn og passord.');
       return;
+    }
+
+    let email = identifier.trim();
+    if (!email.includes('@')) {
+      const { data, error } = await supabase.rpc('get_email_for_username', {
+        p_username: email,
+      });
+      if (error || !data) {
+        Alert.alert('Innlogging feilet', 'Fant ingen bruker med dette brukernavnet.');
+        return;
+      }
+      email = String(data);
     }
 
     setLoading(true);
     const { error } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
+      email,
       password,
     });
     setLoading(false);
@@ -31,15 +43,15 @@ export default function SignInScreen() {
 
   return (
     <AuthShell title="Velkommen tilbake" subtitle="Logg inn for å fortsette">
-      <Text style={styles.label}>E-post</Text>
+      <Text style={styles.label}>E-post eller brukernavn</Text>
       <TextInput
         style={styles.input}
         autoCapitalize="none"
-        autoComplete="email"
+        autoComplete="username"
         keyboardType="email-address"
-        placeholder="you@email.com"
-        value={email}
-        onChangeText={setEmail}
+        placeholder="epost eller brukernavn"
+        value={identifier}
+        onChangeText={setIdentifier}
       />
 
       <Text style={styles.label}>Passord</Text>

@@ -358,6 +358,7 @@ export default function App() {
   const [isHydrating, setIsHydrating] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [username, setUsername] = useState<string | null>(null);
   const colorScheme = useColorScheme();
 
   const resolvedTheme = appTheme === 'system' ? (colorScheme ?? 'light') : appTheme;
@@ -377,6 +378,7 @@ export default function App() {
     projectForm: false,
     projectDetail: false,
     nickname: false,
+    username: false,
     goalForm: false,
   });
   const [editingLog, setEditingLog] = useState<ServiceLog | null>(null);
@@ -450,6 +452,10 @@ export default function App() {
         const uid = userData.user.id;
         setUserId(uid);
         setUserEmail(userData.user.email ?? null);
+        const metaUsername = (userData.user.user_metadata as any)?.username;
+        if (metaUsername) {
+          setUsername(String(metaUsername));
+        }
 
         const { data: carsData, error: carsError } = await supabase
           .from('cars')
@@ -513,6 +519,15 @@ export default function App() {
         setActiveCarId(null);
         setView('onboarding');
         setDbReady(true);
+
+        const { data: profileRow } = await supabase
+          .from('profiles')
+          .select('username')
+          .eq('user_id', uid)
+          .maybeSingle();
+        if (profileRow?.username) {
+          setUsername(profileRow.username);
+        }
       } catch (error) {
         console.warn('Failed to init Supabase data', error);
       } finally {
@@ -1572,6 +1587,34 @@ export default function App() {
     }
   };
 
+  const handleSaveUsername = async (value: string) => {
+    if (!userId) return;
+    const clean = value.trim();
+    if (!/^[a-zA-Z0-9_]{3,24}$/.test(clean)) {
+      Alert.alert('Ugyldig brukernavn', 'Bruk 3–24 tegn (bokstaver, tall eller underscore).');
+      return;
+    }
+    if (username && clean.toLowerCase() === username.toLowerCase()) {
+      setModals((prev) => ({ ...prev, username: false }));
+      return;
+    }
+    const availability = await supabase.rpc('is_username_available', { p_username: clean });
+    if (availability.error || availability.data === false) {
+      Alert.alert('Brukernavn opptatt', 'Velg et annet brukernavn.');
+      return;
+    }
+    const { error } = await supabase
+      .from('profiles')
+      .upsert({ user_id: userId, username: clean });
+    if (error) {
+      Alert.alert('Kunne ikke lagre', error.message);
+      return;
+    }
+    await supabase.auth.updateUser({ data: { username: clean } });
+    setUsername(clean);
+    setModals((prev) => ({ ...prev, username: false }));
+  };
+
   const handleEditLog = (log: ServiceLog) => {
     setEditingLog(log);
     setSelectedLogType(log.type || 'service');
@@ -1616,6 +1659,13 @@ export default function App() {
     }
   }, [activeCarId, car, dbReady, view]);
 
+  useEffect(() => {
+    if (!dbReady || !userId) return;
+    if (!username) {
+      setModals((prev) => ({ ...prev, username: true }));
+    }
+  }, [dbReady, userId, username]);
+
   const handleSignOut = () => {
     Alert.alert('Logg ut', 'Logg ut av kontoen din?', [
       { text: 'Avbryt', style: 'cancel' },
@@ -1629,6 +1679,7 @@ export default function App() {
           } else {
             setUserId(null);
             setUserEmail(null);
+            setUsername(null);
             setCars([]);
             setCar(null);
             setActiveCarId(null);
@@ -1761,6 +1812,7 @@ export default function App() {
                     onEditNickname={() => setModals((prev) => ({ ...prev, nickname: true }))}
                     onSignOut={handleSignOut}
                     onClose={closeSettings}
+                    username={username}
                   />
                 </Animated.View>
               )}
@@ -2056,6 +2108,18 @@ export default function App() {
                 onSave={(val: string) => {
                   handleSaveNickname(val);
                   setModals((prev) => ({ ...prev, nickname: false }));
+                }}
+              />
+              <SimpleInputModal
+                visible={modals.username}
+                title="Vennligst sett et brukernavn"
+                placeholder="brukernavn"
+                keyboard="default"
+                onClose={() => {
+                  Alert.alert('Brukernavn kreves', 'Du må sette et brukernavn for å fortsette.');
+                }}
+                onSave={(val: string) => {
+                  handleSaveUsername(val);
                 }}
               />
               <SimpleInputModal
@@ -2550,6 +2614,7 @@ const ConfigScreen = ({
   onEditNickname,
   onSignOut,
   onClose,
+  username,
 }: any) => {
   const { theme } = useTheme();
   const styles = useStyles();
@@ -2628,6 +2693,11 @@ const ConfigScreen = ({
 
     <Text style={styles.settingsHeader}>Konto</Text>
     <View style={styles.settingsGroup}>
+      <View style={styles.settingsRow}>
+        <Text style={styles.settingsLabel}>Brukernavn</Text>
+        <Text style={styles.settingsValue}>{username || '—'}</Text>
+      </View>
+      <View style={styles.settingsDivider} />
       <TouchableOpacity style={styles.settingsRow} onPress={onSignOut}>
         <Text style={styles.settingsLabel}>Logg ut</Text>
         <Ionicons name="log-out-outline" size={18} color={theme.textDim} />

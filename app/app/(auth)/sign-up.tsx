@@ -9,13 +9,19 @@ import { AuthShell, useAuthStyles } from '@/components/auth/auth-shell';
 export default function SignUpScreen() {
   const { styles } = useAuthStyles();
   const [email, setEmail] = React.useState('');
+  const [username, setUsername] = React.useState('');
   const [password, setPassword] = React.useState('');
   const [confirm, setConfirm] = React.useState('');
   const [loading, setLoading] = React.useState(false);
 
   const handleSignUp = async () => {
-    if (!email || !password) {
-      Alert.alert('Mangler informasjon', 'Vennligst skriv inn e-post og passord.');
+    if (!email || !username || !password) {
+      Alert.alert('Mangler informasjon', 'Vennligst skriv inn e-post, brukernavn og passord.');
+      return;
+    }
+    const cleanUsername = username.trim();
+    if (!/^[a-zA-Z0-9_]{3,24}$/.test(cleanUsername)) {
+      Alert.alert('Ugyldig brukernavn', 'Bruk 3–24 tegn (bokstaver, tall eller underscore).');
       return;
     }
     if (password !== confirm) {
@@ -25,10 +31,19 @@ export default function SignUpScreen() {
 
     setLoading(true);
     const redirectUrl = Linking.createURL('auth-callback');
+    const availability = await supabase.rpc('is_username_available', { p_username: cleanUsername });
+    if (availability.error || availability.data === false) {
+      setLoading(false);
+      Alert.alert('Brukernavn opptatt', 'Velg et annet brukernavn.');
+      return;
+    }
     const { error } = await supabase.auth.signUp({
       email: email.trim(),
       password,
       options: {
+        data: {
+          username: cleanUsername,
+        },
         emailRedirectTo: redirectUrl,
       },
     });
@@ -50,6 +65,16 @@ export default function SignUpScreen() {
         placeholder="you@email.com"
         value={email}
         onChangeText={setEmail}
+      />
+
+      <Text style={styles.label}>Brukernavn</Text>
+      <TextInput
+        style={styles.input}
+        autoCapitalize="none"
+        autoComplete="username"
+        placeholder="dittbrukernavn"
+        value={username}
+        onChangeText={setUsername}
       />
 
       <Text style={styles.label}>Passord</Text>
