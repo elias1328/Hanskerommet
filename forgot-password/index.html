@@ -362,6 +362,7 @@
       const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
 
       const showResetForm = () => {
+        successModal.classList.add("hidden");
         requestForm.classList.add("hidden");
         resetForm.classList.remove("hidden");
         headline.textContent = "Velg nytt passord";
@@ -369,6 +370,7 @@
       };
 
       const showRequestForm = () => {
+        successModal.classList.add("hidden");
         requestForm.classList.remove("hidden");
         resetForm.classList.add("hidden");
         headline.textContent = "Glemt passord?";
@@ -471,6 +473,9 @@
       } else {
         showRequestForm();
       }
+
+      // Ensure modal is hidden on initial load even if browser restores state.
+      successModal.classList.add("hidden");
     </script>
   </body>
 </html>
