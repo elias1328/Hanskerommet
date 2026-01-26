@@ -107,6 +107,17 @@
         gap: 14px;
       }
 
+      .field {
+        display: grid;
+        gap: 8px;
+      }
+
+      .input-wrap {
+        position: relative;
+        display: grid;
+        align-items: center;
+      }
+
       label {
         font-size: 0.85rem;
         font-weight: 600;
@@ -128,6 +139,31 @@
         outline: none;
         border-color: var(--accent);
         box-shadow: 0 0 0 3px rgba(28, 111, 99, 0.15);
+      }
+
+      .toggle-visibility {
+        position: absolute;
+        right: 10px;
+        background: transparent;
+        border: none;
+        padding: 6px;
+        cursor: pointer;
+        color: var(--ink-2);
+        width: 36px;
+        height: 36px;
+        display: grid;
+        place-items: center;
+      }
+
+      .toggle-visibility svg {
+        width: 20px;
+        height: 20px;
+      }
+
+      .toggle-visibility:focus-visible {
+        outline: 2px solid rgba(28, 111, 99, 0.5);
+        outline-offset: 2px;
+        border-radius: 999px;
       }
 
       button {
@@ -291,7 +327,7 @@
         <div id="status" class="status hidden" aria-live="polite"></div>
 
         <form id="request-form">
-          <div>
+          <div class="field">
             <label for="email">E-postadresse</label>
             <input id="email" name="email" type="email" autocomplete="email" required />
           </div>
@@ -299,13 +335,29 @@
         </form>
 
         <form id="reset-form" class="hidden">
-          <div>
+          <div class="field">
             <label for="password">Nytt passord</label>
-            <input id="password" name="password" type="password" minlength="8" required />
+            <div class="input-wrap">
+              <input id="password" name="password" type="password" minlength="8" required />
+              <button type="button" class="toggle-visibility" data-target="password" aria-pressed="false" aria-label="Vis passord">
+                <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"></path>
+                  <circle cx="12" cy="12" r="3.5"></circle>
+                </svg>
+              </button>
+            </div>
           </div>
-          <div>
+          <div class="field">
             <label for="confirm">Bekreft passord</label>
-            <input id="confirm" name="confirm" type="password" minlength="8" required />
+            <div class="input-wrap">
+              <input id="confirm" name="confirm" type="password" minlength="8" required />
+              <button type="button" class="toggle-visibility" data-target="confirm" aria-pressed="false" aria-label="Vis passord">
+                <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"></path>
+                  <circle cx="12" cy="12" r="3.5"></circle>
+                </svg>
+              </button>
+            </div>
           </div>
           <button type="submit" id="reset-btn">Oppdater passord</button>
           <p class="hint">Bruk minst 8 tegn. Gjerne en miks av bokstaver og tall.</p>
@@ -349,6 +401,7 @@
       const resetBtn = document.getElementById("reset-btn");
       const successModal = document.getElementById("success-modal");
       const closeModal = document.getElementById("close-modal");
+      const toggleButtons = document.querySelectorAll(".toggle-visibility");
 
       const showStatus = (message, kind = "ok") => {
         status.textContent = message;
@@ -470,6 +523,19 @@
 
       closeModal.addEventListener("click", () => {
         successModal.classList.add("hidden");
+        window.location.href = "https://elias1328.github.io/Hanskerommet/";
+      });
+
+      toggleButtons.forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const targetId = btn.getAttribute("data-target");
+          const input = targetId ? document.getElementById(targetId) : null;
+          if (!input) return;
+          const isPassword = input.getAttribute("type") === "password";
+          input.setAttribute("type", isPassword ? "text" : "password");
+          btn.setAttribute("aria-pressed", String(isPassword));
+          btn.setAttribute("aria-label", isPassword ? "Skjul passord" : "Vis passord");
+        });
       });
 
       if (type === "recovery" || code || hashParams.get("access_token")) {

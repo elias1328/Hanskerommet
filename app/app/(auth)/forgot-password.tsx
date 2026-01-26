@@ -18,7 +18,7 @@ export default function ForgotPasswordScreen() {
     }
 
     setLoading(true);
-    const redirectUrl = Linking.createURL('auth-callback');
+    const redirectUrl = 'https://elias1328.github.io/Hanskerommet/forgot-password/';
     const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
       redirectTo: redirectUrl,
     });
