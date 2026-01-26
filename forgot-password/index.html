@@ -201,6 +201,37 @@
         display: none;
       }
 
+      .modal {
+        position: fixed;
+        inset: 0;
+        background: rgba(20, 16, 12, 0.45);
+        display: grid;
+        place-items: center;
+        padding: 20px;
+        z-index: 10;
+      }
+
+      .modal-card {
+        width: min(420px, 100%);
+        background: #ffffff;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        box-shadow: var(--shadow);
+        padding: 22px;
+        text-align: center;
+        animation: float-in 0.4s ease both;
+      }
+
+      .modal-card h3 {
+        font-family: "Fraunces", serif;
+        margin: 0 0 8px;
+        font-size: 1.4rem;
+      }
+
+      .modal-card p {
+        margin: 0 0 16px;
+      }
+
       @keyframes float-in {
         from {
           opacity: 0;
@@ -248,44 +279,52 @@
           <span class="brand-dot"></span>
           Hanskerommet
         </div>
-        <h1 id="headline">Forgot your password?</h1>
+        <h1 id="headline">Glemt passord?</h1>
         <p id="subcopy">
-          Enter the email connected to your account and we’ll send you a secure reset link.
+          Skriv inn e-posten knyttet til kontoen din, så sender vi en sikker lenke.
         </p>
 
         <div id="status" class="status hidden" aria-live="polite"></div>
 
         <form id="request-form">
           <div>
-            <label for="email">Email address</label>
+            <label for="email">E-postadresse</label>
             <input id="email" name="email" type="email" autocomplete="email" required />
           </div>
-          <button type="submit" id="request-btn">Send reset link</button>
+          <button type="submit" id="request-btn">Send lenke</button>
         </form>
 
         <form id="reset-form" class="hidden">
           <div>
-            <label for="password">New password</label>
+            <label for="password">Nytt passord</label>
             <input id="password" name="password" type="password" minlength="8" required />
           </div>
           <div>
-            <label for="confirm">Confirm password</label>
+            <label for="confirm">Bekreft passord</label>
             <input id="confirm" name="confirm" type="password" minlength="8" required />
           </div>
-          <button type="submit" id="reset-btn">Update password</button>
-          <p class="hint">Use at least 8 characters. Mix letters, numbers, and symbols.</p>
+          <button type="submit" id="reset-btn">Oppdater passord</button>
+          <p class="hint">Bruk minst 8 tegn. Gjerne en miks av bokstaver og tall.</p>
         </form>
       </section>
 
       <aside class="card panel">
-        <h2>How it works</h2>
+        <h2>Slik fungerer det</h2>
         <ul>
-          <li>We send a secure, time-limited link to your inbox.</li>
-          <li>Open the link to verify your identity and set a new password.</li>
-          <li>You’ll be signed in automatically after updating.</li>
+          <li>Vi sender en sikker lenke til innboksen din.</li>
+          <li>Åpne lenken for å bekrefte og velge nytt passord.</li>
+          <li>Du logges inn automatisk etter oppdatering.</li>
         </ul>
       </aside>
     </main>
+
+    <div id="success-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="success-title">
+      <div class="modal-card">
+        <h3 id="success-title">Passord oppdatert</h3>
+        <p>Passordet ditt er endret. Du kan trygt lukke denne siden.</p>
+        <button type="button" id="close-modal">Lukk</button>
+      </div>
+    </div>
 
     <script type="module">
       import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -304,6 +343,8 @@
       const subcopy = document.getElementById("subcopy");
       const requestBtn = document.getElementById("request-btn");
       const resetBtn = document.getElementById("reset-btn");
+      const successModal = document.getElementById("success-modal");
+      const closeModal = document.getElementById("close-modal");
 
       const showStatus = (message, kind = "ok") => {
         status.textContent = message;
@@ -323,16 +364,16 @@
       const showResetForm = () => {
         requestForm.classList.add("hidden");
         resetForm.classList.remove("hidden");
-        headline.textContent = "Set a new password";
-        subcopy.textContent = "Choose a fresh password for your Hanskerommet account.";
+        headline.textContent = "Velg nytt passord";
+        subcopy.textContent = "Lag et nytt passord for Hanskerommet-kontoen din.";
       };
 
       const showRequestForm = () => {
         requestForm.classList.remove("hidden");
         resetForm.classList.add("hidden");
-        headline.textContent = "Forgot your password?";
+        headline.textContent = "Glemt passord?";
         subcopy.textContent =
-          "Enter the email connected to your account and we’ll send you a secure reset link.";
+          "Skriv inn e-posten knyttet til kontoen din, så sender vi en sikker lenke.";
       };
 
       const handleRecovery = async () => {
@@ -340,7 +381,7 @@
           showRequestForm();
           return;
         }
-        showStatus("Verifying your reset link…", "ok");
+        showStatus("Bekrefter lenken din …", "ok");
 
         let error = null;
         if (typeof supabase.auth.getSessionFromUrl === "function") {
@@ -362,7 +403,7 @@
         }
 
         if (error) {
-          showStatus("This reset link is invalid or expired. Please request a new one.", "err");
+          showStatus("Lenken er ugyldig eller utløpt. Be om en ny.", "err");
           showRequestForm();
           return;
         }
@@ -385,7 +426,7 @@
           showStatus(error.message, "err");
           return;
         }
-        showStatus("Check your inbox — we sent a reset link.", "ok");
+        showStatus("Sjekk innboksen — vi har sendt en lenke.", "ok");
         requestForm.reset();
       });
 
@@ -396,11 +437,11 @@
         const password = String(data.get("password") || "");
         const confirm = String(data.get("confirm") || "");
         if (password.length < 8) {
-          showStatus("Password must be at least 8 characters.", "err");
+          showStatus("Passordet må være minst 8 tegn.", "err");
           return;
         }
         if (password !== confirm) {
-          showStatus("Passwords do not match.", "err");
+          showStatus("Passordene er ikke like.", "err");
           return;
         }
         resetBtn.disabled = true;
@@ -410,8 +451,13 @@
           showStatus(error.message, "err");
           return;
         }
-        showStatus("Password updated. You can now sign in with your new password.", "ok");
+        showStatus("Passordet er oppdatert.", "ok");
         resetForm.reset();
+        successModal.classList.remove("hidden");
+      });
+
+      closeModal.addEventListener("click", () => {
+        successModal.classList.add("hidden");
       });
 
       if (type === "recovery" || code || hashParams.get("access_token")) {
