@@ -29,12 +29,14 @@ import { BlurView } from 'expo-blur';
 import PagerView from 'react-native-pager-view';
 import * as ImagePicker from 'expo-image-picker';
 import DateTimePicker from '@react-native-community/datetimepicker';
+import * as Haptics from 'expo-haptics';
 import { Swipeable } from 'react-native-gesture-handler';
 import { getBrandLogo } from '../../brand-logos';
 import { supabase } from '@/lib/supabase';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system/legacy';
 import { DARK_THEME, LIGHT_THEME, ThemeContext, StylesContext, useTheme, useStyles, createStyles } from '@/components/garage/theme';
+import { ProjectDetailModal, GoalFormModal } from '@/components/garage/project-detail-modal';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 
 // Enable LayoutAnimation for Android
@@ -79,6 +81,17 @@ interface Project {
   description?: string | null;
   category?: string | null;
   budgetPlanned?: number | null;
+}
+
+interface ProjectGoal {
+  id: string;
+  projectId: string;
+  title: string;
+  status: 'open' | 'done';
+  notes?: string | null;
+  dueDate?: string | null;
+  createdAt?: string | null;
+  completedAt?: string | null;
 }
 
 interface ProjectMedia {
@@ -336,6 +349,7 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [draftProjectId, setDraftProjectId] = useState<string | null>(null);
+  const [projectGoals, setProjectGoals] = useState<ProjectGoal[]>([]);
   const [projectMedia, setProjectMedia] = useState<ProjectMedia[]>([]);
   const [logMedia, setLogMedia] = useState<LogMedia[]>([]);
   const [units, setUnits] = useState<'km' | 'mi'>('km');
@@ -363,9 +377,12 @@ export default function App() {
     projectForm: false,
     projectDetail: false,
     nickname: false,
+    goalForm: false,
   });
   const [editingLog, setEditingLog] = useState<ServiceLog | null>(null);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
+  const [editingGoal, setEditingGoal] = useState<ProjectGoal | null>(null);
+  const [goalFormProjectId, setGoalFormProjectId] = useState<string | null>(null);
   const [projectDetailId, setProjectDetailId] = useState<string | null>(null);
   const [projectMediaViewer, setProjectMediaViewer] = useState<{ projectId: string; media: { id: string; uri: string }[]; index: number } | null>(null);
   const [logMediaViewer, setLogMediaViewer] = useState<{ logId: string | null; index: number }>({ logId: null, index: 0 });
@@ -606,11 +623,35 @@ export default function App() {
       setProjects(mappedProjects);
       const storedProjectId = settingsProjectIdRef.current;
       const nextProjectId =
-        (storedProjectId && mappedProjects.some((p) => p.id === storedProjectId)
+        storedProjectId && mappedProjects.some((p) => p.id === storedProjectId)
           ? storedProjectId
-          : null) || mappedProjects[0]?.id || null;
+          : null;
       settingsProjectIdRef.current = null;
       setActiveProjectId(nextProjectId);
+
+      if (mappedProjects.length) {
+        const { data: goalRows, error: goalError } = await supabase
+          .from('project_goals')
+          .select('*')
+          .eq('user_id', userId)
+          .in('project_id', mappedProjects.map((p) => p.id))
+          .order('created_at', { ascending: true });
+        if (goalError) throw goalError;
+        setProjectGoals(
+          (goalRows || []).map((row: any) => ({
+            id: row.id,
+            projectId: row.project_id,
+            title: row.title,
+            status: (row.status as ProjectGoal['status']) || 'open',
+            notes: row.notes ?? null,
+            dueDate: row.due_date ?? null,
+            createdAt: row.created_at ?? null,
+            completedAt: row.completed_at ?? null,
+          }))
+        );
+      } else {
+        setProjectGoals([]);
+      }
 
       const { data: mediaRows, error: mediaError } = await supabase
         .from('project_media')
@@ -694,8 +735,15 @@ export default function App() {
     ];
     if (activeProjectId) {
       updates.push({ user_id: userId, key: 'activeProjectId', value: activeProjectId });
+      supabase.from('settings').upsert(updates, { onConflict: 'user_id,key' });
+    } else {
+      supabase.from('settings').upsert(updates, { onConflict: 'user_id,key' });
+      supabase
+        .from('settings')
+        .delete()
+        .eq('user_id', userId)
+        .eq('key', 'activeProjectId');
     }
-    supabase.from('settings').upsert(updates, { onConflict: 'user_id,key' });
   }, [units, appTheme, activeProjectId, dbReady, userId]);
 
 
@@ -810,6 +858,11 @@ export default function App() {
     }).start();
   };
 
+  const openProjectFormForEdit = (project: Project) => {
+    setEditingProject(project);
+    openProjectForm();
+  };
+
   const closeProjectForm = () => {
     Animated.timing(projectFormX, {
       toValue: screenWidth,
@@ -817,7 +870,20 @@ export default function App() {
       useNativeDriver: true,
     }).start(() => {
       setModals((prev) => ({ ...prev, projectForm: false }));
+      setEditingProject(null);
     });
+  };
+
+  const openGoalForm = (projectId: string, goal?: ProjectGoal | null) => {
+    setEditingGoal(goal ?? null);
+    setGoalFormProjectId(projectId);
+    setModals((prev) => ({ ...prev, goalForm: true }));
+  };
+
+  const closeGoalForm = () => {
+    setModals((prev) => ({ ...prev, goalForm: false }));
+    setEditingGoal(null);
+    setGoalFormProjectId(null);
   };
 
   const navigateTo = (nextView: 'garage' | 'vault' | 'logs' | 'projects' | 'config') => {
@@ -1028,6 +1094,47 @@ export default function App() {
     setDraftProjectId(project.id);
     setProjectDetailId(project.id);
     return project;
+  };
+
+  const handleUpdateProject = async (
+    projectId: string,
+    details: { title?: string; description?: string | null; category?: string | null; budgetPlanned?: number | null }
+  ) => {
+    if (!userId) return null;
+    const payload: any = {
+      updated_at: new Date().toISOString(),
+    };
+    if (details.title !== undefined) payload.title = details.title.trim();
+    if (details.description !== undefined) payload.description = details.description;
+    if (details.category !== undefined) payload.category = details.category;
+    if (details.budgetPlanned !== undefined) payload.budget_planned = details.budgetPlanned;
+
+    const { data: projectRow, error } = await supabase
+      .from('projects')
+      .update(payload)
+      .eq('id', projectId)
+      .eq('user_id', userId)
+      .select('*')
+      .single();
+    if (error || !projectRow) {
+      Alert.alert('Oppdatering feilet', error?.message || 'Kunne ikke oppdatere prosjekt.');
+      return null;
+    }
+    const updated: Project = {
+      id: projectRow.id,
+      title: projectRow.title,
+      status: (projectRow.status as Project['status']) || 'active',
+      updatedAt: projectRow.updated_at ? new Date(projectRow.updated_at).getTime() : Date.now(),
+      carId: projectRow.car_id,
+      description: projectRow.description,
+      category: projectRow.category,
+      budgetPlanned:
+        projectRow.budget_planned !== null && projectRow.budget_planned !== undefined
+          ? Number(projectRow.budget_planned)
+          : null
+    };
+    setProjects((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+    return updated;
   };
 
   const touchProject = (projectId: string | null | undefined) => {
@@ -1295,6 +1402,7 @@ export default function App() {
             .filter(Boolean) as string[];
           setProjects((prev) => prev.filter((p) => p.id !== projectId));
           setProjectMedia((prev) => prev.filter((m) => m.projectId !== projectId));
+          setProjectGoals((prev) => prev.filter((g) => g.projectId !== projectId));
           setLogs((prev) => prev.map((l) => (l.projectId === projectId ? { ...l, projectId: null } : l)));
           if (activeProjectId === projectId) setActiveProjectId(null);
           closeProjectDetail();
@@ -1324,6 +1432,123 @@ export default function App() {
         .eq('id', projectId)
         .eq('user_id', userId);
     }
+  };
+
+  const saveProjectGoal = async (input: { title: string; notes?: string | null; dueDate?: string | null }) => {
+    if (!userId || !goalFormProjectId) return null;
+    const cleanTitle = input.title.trim();
+    if (!cleanTitle) return null;
+
+    if (editingGoal?.id) {
+      const { data: goalRow, error } = await supabase
+        .from('project_goals')
+        .update({
+          title: cleanTitle,
+          notes: input.notes ?? null,
+          due_date: input.dueDate ?? null,
+        })
+        .eq('id', editingGoal.id)
+        .eq('user_id', userId)
+        .select('*')
+        .single();
+      if (error || !goalRow) {
+        Alert.alert('Kunne ikke oppdatere målet', error?.message || 'Prøv igjen senere.');
+        return null;
+      }
+      const updated: ProjectGoal = {
+        id: goalRow.id,
+        projectId: goalRow.project_id,
+        title: goalRow.title,
+        status: (goalRow.status as ProjectGoal['status']) || 'open',
+        notes: goalRow.notes ?? null,
+        dueDate: goalRow.due_date ?? null,
+        createdAt: goalRow.created_at ?? null,
+        completedAt: goalRow.completed_at ?? null,
+      };
+      setProjectGoals((prev) => prev.map((g) => (g.id === updated.id ? updated : g)));
+      return updated;
+    }
+
+    const { data: goalRow, error } = await supabase
+      .from('project_goals')
+      .insert({
+        user_id: userId,
+        project_id: goalFormProjectId,
+        title: cleanTitle,
+        status: 'open',
+        notes: input.notes ?? null,
+        due_date: input.dueDate ?? null,
+      })
+      .select('*')
+      .single();
+    if (error || !goalRow) {
+      Alert.alert('Kunne ikke legge til mål', error?.message || 'Prøv igjen senere.');
+      return null;
+    }
+    const goal: ProjectGoal = {
+      id: goalRow.id,
+      projectId: goalRow.project_id,
+      title: goalRow.title,
+      status: (goalRow.status as ProjectGoal['status']) || 'open',
+      notes: goalRow.notes ?? null,
+      dueDate: goalRow.due_date ?? null,
+      createdAt: goalRow.created_at ?? null,
+      completedAt: goalRow.completed_at ?? null,
+    };
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setProjectGoals((prev) => [goal, ...prev]);
+    return goal;
+  };
+
+  const toggleProjectGoal = async (goal: ProjectGoal) => {
+    if (!userId) return;
+    const nextStatus: ProjectGoal['status'] = goal.status === 'done' ? 'open' : 'done';
+    const { data: goalRow, error } = await supabase
+      .from('project_goals')
+      .update({
+        status: nextStatus,
+        completed_at: nextStatus === 'done' ? new Date().toISOString() : null,
+      })
+      .eq('id', goal.id)
+      .eq('user_id', userId)
+      .select('*')
+      .single();
+    if (error || !goalRow) {
+      Alert.alert('Kunne ikke oppdatere målet', error?.message || 'Prøv igjen senere.');
+      return;
+    }
+    const updated: ProjectGoal = {
+      id: goalRow.id,
+      projectId: goalRow.project_id,
+      title: goalRow.title,
+      status: (goalRow.status as ProjectGoal['status']) || 'open',
+      notes: goalRow.notes ?? null,
+      dueDate: goalRow.due_date ?? null,
+      createdAt: goalRow.created_at ?? null,
+      completedAt: goalRow.completed_at ?? null,
+    };
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setProjectGoals((prev) => prev.map((g) => (g.id === updated.id ? updated : g)));
+    if (nextStatus === 'done') {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } else {
+      Haptics.selectionAsync();
+    }
+  };
+
+  const deleteProjectGoal = async (goalId: string) => {
+    if (!userId) return;
+    const { error } = await supabase
+      .from('project_goals')
+      .delete()
+      .eq('id', goalId)
+      .eq('user_id', userId);
+    if (error) {
+      Alert.alert('Kunne ikke slette målet', error.message);
+      return;
+    }
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setProjectGoals((prev) => prev.filter((g) => g.id !== goalId));
   };
 
   const handleSaveNickname = async (value: string) => {
@@ -1510,9 +1735,12 @@ export default function App() {
                   <ProjectsScreen
                     logs={logs}
                     projects={projects}
+                    goals={projectGoals}
+                    activeProjectId={activeProjectId}
                     onStartProject={openProjectForm}
                     onAddLogToProject={(projectId: string) => openAddLog(projectId)}
                     onOpenProject={openProjectDetail}
+                    onSetActiveProject={setActiveProjectId}
                   />
                 </View>
                 <View key="vault" style={{ flex: 1, backgroundColor: theme.bg }}>
@@ -1638,6 +1866,19 @@ export default function App() {
                     onSave={async (proj: Partial<Project>) => {
                       const cleanTitle = (proj.title || '').trim();
                       if (!cleanTitle) return;
+                      if (editingProject?.id) {
+                        const updated = await handleUpdateProject(editingProject.id, {
+                          title: cleanTitle,
+                          description: (proj.description || '').trim() || null,
+                          category: (proj.category || '').trim() || null,
+                          budgetPlanned: proj.budgetPlanned ?? null
+                        });
+                        if (updated) {
+                          setProjectDetailId(updated.id);
+                          closeProjectForm();
+                        }
+                        return;
+                      }
                       const project = await handleCreateProject(cleanTitle, {
                         description: (proj.description || '').trim() || null,
                         category: (proj.category || '').trim() || null,
@@ -1651,12 +1892,28 @@ export default function App() {
                   />
                 </Animated.View>
               )}
+              {modals.goalForm && (
+                <Animated.View style={[styles.addLogOverlay, { zIndex: 40 }]}>
+                  <GoalFormModal
+                    visible={modals.goalForm}
+                    goal={editingGoal}
+                    onClose={closeGoalForm}
+                    onSave={async (payload: { title: string; notes?: string | null; dueDate?: string | null }) => {
+                      const saved = await saveProjectGoal(payload);
+                      if (saved) {
+                        closeGoalForm();
+                      }
+                    }}
+                  />
+                </Animated.View>
+              )}
               {modals.projectDetail && projectDetailId && (
                 <Animated.View style={[styles.addLogOverlay, { transform: [{ translateX: projectDetailX }], zIndex: 25 }]}>
                   <ProjectDetailModal
                     project={projects.find((p) => p.id === projectDetailId)}
                     logs={logs.filter((l) => l.projectId === projectDetailId)}
                     media={projectMedia.filter((m) => m.projectId === projectDetailId)}
+                    goals={projectGoals.filter((g) => g.projectId === projectDetailId)}
                     onClose={closeProjectDetail}
                     onAddLog={() => {
                       closeProjectDetail();
@@ -1681,6 +1938,18 @@ export default function App() {
                     units={units}
                     allLogMedia={logMedia.filter((m) => logs.some((l) => l.id === m.logId && l.projectId === projectDetailId))}
                     onOpenGrid={() => setProjectImageGrid({ projectId: projectDetailId })}
+                    onAddGoal={() => openGoalForm(projectDetailId)}
+                    onEditGoal={(goal: ProjectGoal) => openGoalForm(projectDetailId, goal)}
+                    onToggleGoal={(goal: ProjectGoal) => toggleProjectGoal(goal)}
+                    onDeleteGoal={(goal: ProjectGoal) => deleteProjectGoal(goal.id)}
+                    onEditProject={() => {
+                      const project = projects.find((p) => p.id === projectDetailId);
+                      if (project) {
+                        openProjectFormForEdit(project);
+                      }
+                    }}
+                    formatDistance={formatDistance}
+                    formatProjectStatusLabel={formatProjectStatusLabel}
                   />
                 </Animated.View>
               )}
@@ -2080,25 +2349,36 @@ const TimelineScreen = ({
 const ProjectsScreen = ({
   logs,
   projects,
+  goals = [],
+  activeProjectId,
   onStartProject,
   onAddLogToProject,
   onOpenProject,
+  onSetActiveProject,
 }: {
   logs: ServiceLog[];
   projects: Project[];
+  goals: ProjectGoal[];
+  activeProjectId: string | null;
   onStartProject: () => void;
   onAddLogToProject: (id: string) => void;
   onOpenProject: (id: string) => void;
+  onSetActiveProject: (id: string | null) => void;
 }) => {
   const { theme } = useTheme();
   const styles = useStyles();
   const activeProjects = (projects || []).filter((p) => p.status !== 'done');
   const completedProjects = (projects || []).filter((p) => p.status === 'done');
+  const goalList = goals || [];
   const statsForProject = (projectId: string) => {
     const projectLogs = logs.filter((l) => l.projectId === projectId);
     const totalCost = projectLogs.reduce((sum, item) => sum + (item.cost || 0), 0);
     return { count: projectLogs.length, cost: totalCost };
   };
+  const activeProject = activeProjectId ? projects.find((p) => p.id === activeProjectId) || null : null;
+  const goalsForProject = (projectId: string) => goalList.filter((g) => g.projectId === projectId);
+  const nextGoalForProject = (projectId: string) =>
+    goalsForProject(projectId).find((g) => g.status !== 'done') || null;
   return (
     <ScrollView
       style={{ flex: 1, backgroundColor: theme.bg }}
@@ -2114,6 +2394,58 @@ const ProjectsScreen = ({
         </TouchableOpacity>
       </View>
 
+      {activeProject && (
+        <View style={styles.activeProjectCard}>
+          <View style={styles.activeProjectTopRow}>
+            <View>
+              <Text style={styles.activeProjectLabel}>Aktivt prosjekt</Text>
+              <Text style={styles.pageTitleSmall}>{activeProject.title}</Text>
+              <Text style={styles.projectMeta}>
+                {formatProjectStatusLabel(activeProject.status)} · {new Date(activeProject.updatedAt).toLocaleDateString()}
+              </Text>
+            </View>
+            <TouchableOpacity style={styles.primaryBtnSmall} onPress={() => onOpenProject(activeProject.id)}>
+              <Text style={styles.btnTxt}>Åpne</Text>
+            </TouchableOpacity>
+          </View>
+          {activeProject.budgetPlanned ? (
+            <View style={styles.budgetBarWrap}>
+              <View style={styles.budgetBarTrack}>
+                <View
+                  style={[
+                    styles.budgetBarFill,
+                    {
+                      width: `${Math.min(
+                        (statsForProject(activeProject.id).cost / activeProject.budgetPlanned) * 100,
+                        100
+                      )}%`,
+                    },
+                  ]}
+                />
+              </View>
+              <Text style={styles.projectMeta}>
+                {statsForProject(activeProject.id).cost} kr av {activeProject.budgetPlanned} kr
+              </Text>
+            </View>
+          ) : null}
+          {nextGoalForProject(activeProject.id) ? (
+            <Text style={styles.activeProjectGoal}>
+              Neste mål: {nextGoalForProject(activeProject.id)!.title}
+            </Text>
+          ) : (
+            <Text style={styles.activeProjectGoalEmpty}>Ingen mål lagt til ennå.</Text>
+          )}
+          <View style={styles.activeProjectActions}>
+            <TouchableOpacity style={styles.secondaryBtnSmall} onPress={() => onAddLogToProject(activeProject.id)}>
+              <Text style={styles.secondaryBtnText}>Legg til logg</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.secondaryBtnSmall} onPress={() => onSetActiveProject(null)}>
+              <Text style={styles.secondaryBtnText}>Fjern aktiv</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
       {(activeProjects.length === 0 && completedProjects.length === 0) && (
         <View style={styles.projectListItem}>
           <Text style={styles.pageTitleSmall}>Ingen prosjekter ennå</Text>
@@ -2124,6 +2456,7 @@ const ProjectsScreen = ({
       {activeProjects.map((item) => {
         const stats = statsForProject(item.id);
         const statusTone = item.status === 'done' ? theme.success : theme.primary;
+        const isActive = activeProjectId === item.id;
         return (
           <TouchableOpacity
             key={item.id}
@@ -2134,7 +2467,15 @@ const ProjectsScreen = ({
               <View style={styles.projectContent}>
                 <View style={styles.projectTopRow}>
                   <Text style={styles.pageTitleSmall}>{item.title}</Text>
-                  <Text style={styles.projectMeta}>{new Date(item.updatedAt).toLocaleDateString()}</Text>
+                  <View style={styles.projectTopMeta}>
+                    <Text style={styles.projectMeta}>{new Date(item.updatedAt).toLocaleDateString()}</Text>
+                    <TouchableOpacity
+                      style={styles.projectStarBtn}
+                      onPress={() => onSetActiveProject(isActive ? null : item.id)}
+                    >
+                      <Ionicons name={isActive ? 'star' : 'star-outline'} size={16} color={isActive ? theme.warning : theme.textDim} />
+                    </TouchableOpacity>
+                  </View>
                 </View>
                 <View style={styles.projectBottomRow}>
                   <View>
@@ -2157,6 +2498,7 @@ const ProjectsScreen = ({
           {completedProjects.map((item) => {
             const stats = statsForProject(item.id);
             const statusTone = item.status === 'done' ? theme.success : theme.primary;
+            const isActive = activeProjectId === item.id;
             return (
               <TouchableOpacity
                 key={item.id}
@@ -2167,7 +2509,15 @@ const ProjectsScreen = ({
                   <View style={styles.projectContent}>
                     <View style={styles.projectTopRow}>
                       <Text style={styles.pageTitleSmall}>{item.title}</Text>
-                      <Text style={styles.projectMeta}>{new Date(item.updatedAt).toLocaleDateString()}</Text>
+                      <View style={styles.projectTopMeta}>
+                        <Text style={styles.projectMeta}>{new Date(item.updatedAt).toLocaleDateString()}</Text>
+                        <TouchableOpacity
+                          style={styles.projectStarBtn}
+                          onPress={() => onSetActiveProject(isActive ? null : item.id)}
+                        >
+                          <Ionicons name={isActive ? 'star' : 'star-outline'} size={16} color={isActive ? theme.warning : theme.textDim} />
+                        </TouchableOpacity>
+                      </View>
                     </View>
                     <View style={styles.projectBottomRow}>
                       <View>
@@ -2298,190 +2648,6 @@ const ConfigScreen = ({
 
 
 
-const ProjectDetailModal = ({
-  project,
-  logs,
-  media,
-  allLogMedia,
-  onClose,
-  onAddLog,
-  onAddImage,
-  onDelete,
-  onOpenImage,
-  onComplete,
-  onReopen,
-  onOpenGrid,
-  units
-}: any) => {
-  const { theme } = useTheme();
-  const styles = useStyles();
-  const [showBudget, setShowBudget] = useState(false);
-  const [showActions, setShowActions] = useState(false);
-  const createdAt = (project as any)?.createdAt ?? project?.updatedAt;
-  const actionsY = useRef(new Animated.Value(300)).current;
-  const openActionsSheet = () => {
-    setShowActions(true);
-    actionsY.setValue(300);
-    Animated.timing(actionsY, { toValue: 0, duration: 220, useNativeDriver: true }).start();
-  };
-  const closeActionsSheet = () => {
-    Animated.timing(actionsY, { toValue: 300, duration: 180, useNativeDriver: true }).start(() => {
-      setShowActions(false);
-    });
-  };
-  const openProjectActions = () => {
-    openActionsSheet();
-  };
-  if (!project) return null;
-  const nextActionLabel = project.status !== 'done' ? 'Merk som fullført' : 'Gjenåpne prosjekt';
-  return (
-    <View style={[styles.modalBase, { backgroundColor: theme.bg }]}>
-      <View style={styles.modalHeader}>
-        <TouchableOpacity onPress={onClose}>
-          <Ionicons name="chevron-back" size={20} color="white" />
-        </TouchableOpacity>
-    <Text style={styles.modalH1}>{project.title}</Text>
-        <TouchableOpacity onPress={openProjectActions}>
-          <Ionicons name="ellipsis-horizontal" size={22} color="white" />
-        </TouchableOpacity>
-      </View>
-      <ScrollView style={{ backgroundColor: theme.bg }} contentContainerStyle={styles.logForm}>
-        <View style={styles.formSection}>
-          <Text style={styles.sectionHeader}>Oppsummering</Text>
-          <View style={styles.listGroup}>
-            <View style={styles.listRow}>
-              <Text style={styles.listLabel}>Oppdatert</Text>
-              <Text style={styles.listValue}>{new Date(project.updatedAt).toLocaleDateString()}</Text>
-            </View>
-            <View style={styles.listDivider} />
-            <View style={styles.listRow}>
-              <Text style={styles.listLabel}>Opprettet</Text>
-              <Text style={styles.listValue}>{new Date(createdAt).toLocaleDateString()}</Text>
-            </View>
-            <View style={styles.listDivider} />
-            <View style={styles.listRow}>
-              <Text style={styles.listLabel}>Total kostnad</Text>
-              <Text style={styles.listValue}>{logs.reduce((sum: number, l: ServiceLog) => sum + (l.cost || 0), 0)} kr</Text>
-            </View>
-            {project.budgetPlanned ? (
-              <>
-                <View style={styles.listDivider} />
-                <TouchableOpacity style={styles.listRow} onPress={() => setShowBudget((prev) => !prev)}>
-                  <Text style={styles.listLabel}>Budsjett</Text>
-                  <View style={styles.listValueRow}>
-                    <Text style={styles.listValue}>{showBudget ? 'Skjul' : 'Vis'}</Text>
-                    <Ionicons name={showBudget ? 'chevron-up' : 'chevron-down'} size={16} color={theme.textDim} />
-                  </View>
-                </TouchableOpacity>
-                {showBudget && (
-                  <>
-                    <View style={styles.listDivider} />
-                    <View style={styles.listRow}>
-                      <Text style={styles.listLabel}>Planlagt</Text>
-                      <Text style={styles.listValue}>{project.budgetPlanned} kr</Text>
-                    </View>
-                    <View style={styles.listDivider} />
-                    <View style={styles.listRow}>
-                      <Text style={styles.listLabel}>Avvik</Text>
-                      <Text style={styles.listValue}>
-                        {logs.reduce((sum: number, l: ServiceLog) => sum + (l.cost || 0), 0) - project.budgetPlanned} kr
-                      </Text>
-                    </View>
-                  </>
-                )}
-              </>
-            ) : null}
-          </View>
-          <View style={{ marginTop: 6 }} />
-        </View>
-
-        <View style={styles.formSection}>
-          <Text style={styles.sectionHeader}>Bilder</Text>
-          <View style={{ flexDirection: 'row', gap: 10, marginBottom: 12 }}>
-            <TouchableOpacity style={[styles.primaryBtn, { flex: 1 }]} onPress={() => onAddImage('library')}>
-              <Text style={styles.btnTxt}>Legg til bilder</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.secondaryBtn, { flex: 1, borderColor: theme.cardBorder }]} onPress={onOpenGrid}>
-              <Text style={{ color: theme.text, textAlign: 'center' }}>Vis alle</Text>
-            </TouchableOpacity>
-          </View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
-            {[...media, ...allLogMedia].map((item: any) => (
-              <Pressable key={item.id} onPress={() => onOpenImage(item)}>
-                <ImageBackground
-                  source={{ uri: item.uri }}
-                  style={{ width: 120, height: 120 }}
-                  imageStyle={{ borderRadius: 12 }}
-                />
-              </Pressable>
-            ))}
-            {![...media, ...allLogMedia].length && <Text style={{ color: theme.textDim }}>Ingen bilder ennå.</Text>}
-          </ScrollView>
-        </View>
-
-        <View style={styles.formSection}>
-          <Text style={styles.sectionHeader}>Logger</Text>
-          {logs.map((log: ServiceLog) => (
-            <View key={log.id} style={styles.projectListItem}>
-              <View style={styles.projectTopRow}>
-                <Text style={styles.pageTitleSmall}>{log.title}</Text>
-                <Text style={styles.projectMeta}>{log.date}</Text>
-              </View>
-              <Text style={styles.projectStats}>
-                {log.cost} kr {log.mileage ? `• ${formatDistance(log.mileage, units)}` : ''}
-              </Text>
-              {allLogMedia.filter((m: LogMedia) => m.logId === log.id).length > 0 && (
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, marginTop: 8 }}>
-                  {allLogMedia
-                    .filter((m: LogMedia) => m.logId === log.id)
-                    .map((m: LogMedia) => (
-                      <ImageBackground
-                        key={m.id}
-                        source={{ uri: m.uri }}
-                        style={{ width: 64, height: 64 }}
-                        imageStyle={{ borderRadius: 10 }}
-                      />
-                    ))}
-                </ScrollView>
-              )}
-            </View>
-          ))}
-          {!logs.length && <Text style={{ color: theme.textDim }}>Ingen logger ennå.</Text>}
-        </View>
-      </ScrollView>
-      <Modal visible={showActions} transparent animationType="none" onRequestClose={closeActionsSheet}>
-        <Pressable style={styles.sheetOverlay} onPress={closeActionsSheet}>
-          <Animated.View style={[styles.sheetContainer, { transform: [{ translateY: actionsY }] }]}>
-            <View style={styles.sheetHandle} />
-            <TouchableOpacity
-              style={[styles.sheetItem, styles.sheetPrimaryBtn]}
-              onPress={() => {
-                closeActionsSheet();
-                if (project.status !== 'done') {
-                  onComplete(project.id);
-                } else {
-                  onReopen(project.id);
-                }
-              }}
-            >
-              <Text style={styles.sheetPrimaryText}>{nextActionLabel}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.sheetItem, styles.sheetDangerBtn]}
-              onPress={() => {
-                closeActionsSheet();
-                onDelete(project);
-              }}
-            >
-              <Text style={styles.sheetDangerText}>Slett prosjekt</Text>
-            </TouchableOpacity>
-          </Animated.View>
-        </Pressable>
-      </Modal>
-    </View>
-  );
-};
-
 const LogMediaViewer = ({
   media,
   startIndex,
@@ -2610,7 +2776,7 @@ const ProjectFormModal = ({
         <TouchableOpacity onPress={onClose}>
           <Text style={styles.modalCancelText}>Avbryt</Text>
         </TouchableOpacity>
-        <Text style={styles.modalH1}>Nytt prosjekt</Text>
+        <Text style={styles.modalH1}>{project?.id ? 'Rediger prosjekt' : 'Nytt prosjekt'}</Text>
         <TouchableOpacity
           onPress={() =>
             onSave({
