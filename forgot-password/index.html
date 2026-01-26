@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hanskerommet | Reset Password</title>
+    <meta name="description" content="Reset your Hanskerommet password." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;700&family=Work+Sans:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #f4f1ec;
+        --ink: #1d1a16;
+        --ink-2: #4b443d;
+        --accent: #1c6f63;
+        --accent-2: #e1b96a;
+        --card: #ffffff;
+        --line: #e5ded5;
+        --danger: #b12b2b;
+        --ok: #1c6f63;
+        --shadow: 0 20px 60px rgba(34, 26, 16, 0.18);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Work Sans", system-ui, -apple-system, sans-serif;
+        color: var(--ink);
+        background: radial-gradient(1200px 700px at 10% 10%, #fff7e6 0%, transparent 60%),
+          radial-gradient(900px 600px at 90% 15%, #e2f1ee 0%, transparent 60%),
+          linear-gradient(160deg, #f3efe8 0%, #f7f2ec 60%, #f0ebe3 100%);
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 32px 16px;
+      }
+
+      .shell {
+        width: min(980px, 100%);
+        display: grid;
+        gap: 24px;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        align-items: stretch;
+      }
+
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        box-shadow: var(--shadow);
+        padding: 28px;
+        position: relative;
+        overflow: hidden;
+        animation: float-in 0.7s ease both;
+      }
+
+      .card::after {
+        content: "";
+        position: absolute;
+        inset: auto -30% -60% auto;
+        width: 220px;
+        height: 220px;
+        border-radius: 50%;
+        background: radial-gradient(circle at 30% 30%, rgba(28, 111, 99, 0.2), transparent 70%);
+        pointer-events: none;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        color: var(--ink-2);
+        text-transform: uppercase;
+        font-size: 0.72rem;
+      }
+
+      .brand-dot {
+        width: 14px;
+        height: 14px;
+        border-radius: 4px;
+        background: conic-gradient(from 200deg, var(--accent), var(--accent-2), var(--accent));
+      }
+
+      h1 {
+        font-family: "Fraunces", serif;
+        font-size: clamp(1.9rem, 3vw, 2.5rem);
+        margin: 16px 0 8px;
+      }
+
+      p {
+        margin: 0 0 16px;
+        color: var(--ink-2);
+        line-height: 1.6;
+      }
+
+      form {
+        display: grid;
+        gap: 14px;
+      }
+
+      label {
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: var(--ink-2);
+      }
+
+      input {
+        width: 100%;
+        padding: 12px 14px;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+        font-size: 1rem;
+        font-family: inherit;
+        background: #fff;
+        transition: border 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      input:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(28, 111, 99, 0.15);
+      }
+
+      button {
+        width: 100%;
+        padding: 12px 16px;
+        border-radius: 999px;
+        border: none;
+        background: linear-gradient(120deg, var(--accent), #2a9c8a);
+        color: #fff;
+        font-weight: 600;
+        font-size: 1rem;
+        cursor: pointer;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        box-shadow: 0 12px 24px rgba(28, 111, 99, 0.25);
+      }
+
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+        box-shadow: none;
+      }
+
+      button:hover:not(:disabled) {
+        transform: translateY(-1px);
+      }
+
+      .status {
+        border-radius: 14px;
+        padding: 12px 14px;
+        font-size: 0.92rem;
+        border: 1px solid transparent;
+      }
+
+      .status.ok {
+        background: rgba(28, 111, 99, 0.12);
+        color: var(--ok);
+        border-color: rgba(28, 111, 99, 0.3);
+      }
+
+      .status.err {
+        background: rgba(177, 43, 43, 0.1);
+        color: var(--danger);
+        border-color: rgba(177, 43, 43, 0.25);
+      }
+
+      .hint {
+        font-size: 0.85rem;
+        color: var(--ink-2);
+      }
+
+      .panel {
+        padding: 20px;
+        border-radius: 20px;
+        background: linear-gradient(160deg, rgba(28, 111, 99, 0.12), rgba(225, 185, 106, 0.15));
+        border: 1px solid rgba(28, 111, 99, 0.2);
+      }
+
+      .panel h2 {
+        font-family: "Fraunces", serif;
+        margin: 0 0 8px;
+        font-size: 1.4rem;
+      }
+
+      .panel ul {
+        margin: 0;
+        padding-left: 18px;
+        color: var(--ink-2);
+      }
+
+      .hidden {
+        display: none;
+      }
+
+      @keyframes float-in {
+        from {
+          opacity: 0;
+          transform: translateY(12px) scale(0.98);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+      }
+
+      @media (max-width: 720px) {
+        .card {
+          padding: 22px;
+        }
+
+        .panel {
+          order: 2;
+        }
+      }
+
+      @media (max-width: 420px) {
+        body {
+          padding: 20px 12px;
+        }
+
+        .card {
+          border-radius: 18px;
+        }
+
+        h1 {
+          font-size: 1.65rem;
+        }
+
+        button {
+          font-size: 0.98rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="card">
+        <div class="brand">
+          <span class="brand-dot"></span>
+          Hanskerommet
+        </div>
+        <h1 id="headline">Forgot your password?</h1>
+        <p id="subcopy">
+          Enter the email connected to your account and we’ll send you a secure reset link.
+        </p>
+
+        <div id="status" class="status hidden" aria-live="polite"></div>
+
+        <form id="request-form">
+          <div>
+            <label for="email">Email address</label>
+            <input id="email" name="email" type="email" autocomplete="email" required />
+          </div>
+          <button type="submit" id="request-btn">Send reset link</button>
+        </form>
+
+        <form id="reset-form" class="hidden">
+          <div>
+            <label for="password">New password</label>
+            <input id="password" name="password" type="password" minlength="8" required />
+          </div>
+          <div>
+            <label for="confirm">Confirm password</label>
+            <input id="confirm" name="confirm" type="password" minlength="8" required />
+          </div>
+          <button type="submit" id="reset-btn">Update password</button>
+          <p class="hint">Use at least 8 characters. Mix letters, numbers, and symbols.</p>
+        </form>
+      </section>
+
+      <aside class="card panel">
+        <h2>How it works</h2>
+        <ul>
+          <li>We send a secure, time-limited link to your inbox.</li>
+          <li>Open the link to verify your identity and set a new password.</li>
+          <li>You’ll be signed in automatically after updating.</li>
+        </ul>
+      </aside>
+    </main>
+
+    <script type="module">
+      import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+      const SUPABASE_URL = "https://ltglvwkrayxghitsthjk.supabase.co";
+      const SUPABASE_ANON_KEY =
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx0Z2x2d2tyYXl4Z2hpdHN0aGprIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg4MDc3NzQsImV4cCI6MjA4NDM4Mzc3NH0.knoKHvMyyU2gJCPhHEtjg6TSFiwpAdC5ReCkPqDPdU8";
+      const RESET_REDIRECT_URL = "https://elias1328.github.io/Hanskerommet/forgot-password";
+
+      const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+      const requestForm = document.getElementById("request-form");
+      const resetForm = document.getElementById("reset-form");
+      const status = document.getElementById("status");
+      const headline = document.getElementById("headline");
+      const subcopy = document.getElementById("subcopy");
+      const requestBtn = document.getElementById("request-btn");
+      const resetBtn = document.getElementById("reset-btn");
+
+      const showStatus = (message, kind = "ok") => {
+        status.textContent = message;
+        status.className = `status ${kind}`;
+        status.classList.remove("hidden");
+      };
+
+      const hideStatus = () => {
+        status.className = "status hidden";
+      };
+
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get("code");
+      const type = params.get("type");
+
+      const showResetForm = () => {
+        requestForm.classList.add("hidden");
+        resetForm.classList.remove("hidden");
+        headline.textContent = "Set a new password";
+        subcopy.textContent = "Choose a fresh password for your Hanskerommet account.";
+      };
+
+      const showRequestForm = () => {
+        requestForm.classList.remove("hidden");
+        resetForm.classList.add("hidden");
+        headline.textContent = "Forgot your password?";
+        subcopy.textContent =
+          "Enter the email connected to your account and we’ll send you a secure reset link.";
+      };
+
+      const handleRecovery = async () => {
+        if (!code) {
+          showRequestForm();
+          return;
+        }
+        showStatus("Verifying your reset link…", "ok");
+        const { error } = await supabase.auth.exchangeCodeForSession(code);
+        if (error) {
+          showStatus("This reset link is invalid or expired. Please request a new one.", "err");
+          showRequestForm();
+          return;
+        }
+        window.history.replaceState({}, document.title, window.location.pathname);
+        hideStatus();
+        showResetForm();
+      };
+
+      requestForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        hideStatus();
+        const email = new FormData(requestForm).get("email");
+        if (!email) return;
+        requestBtn.disabled = true;
+        const { error } = await supabase.auth.resetPasswordForEmail(String(email).trim(), {
+          redirectTo: RESET_REDIRECT_URL,
+        });
+        requestBtn.disabled = false;
+        if (error) {
+          showStatus(error.message, "err");
+          return;
+        }
+        showStatus("Check your inbox — we sent a reset link.", "ok");
+        requestForm.reset();
+      });
+
+      resetForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        hideStatus();
+        const data = new FormData(resetForm);
+        const password = String(data.get("password") || "");
+        const confirm = String(data.get("confirm") || "");
+        if (password.length < 8) {
+          showStatus("Password must be at least 8 characters.", "err");
+          return;
+        }
+        if (password !== confirm) {
+          showStatus("Passwords do not match.", "err");
+          return;
+        }
+        resetBtn.disabled = true;
+        const { error } = await supabase.auth.updateUser({ password });
+        resetBtn.disabled = false;
+        if (error) {
+          showStatus(error.message, "err");
+          return;
+        }
+        showStatus("Password updated. You can now sign in with your new password.", "ok");
+        resetForm.reset();
+      });
+
+      if (type === "recovery" || code) {
+        handleRecovery();
+      } else {
+        showRequestForm();
+      }
+    </script>
+  </body>
+</html>
