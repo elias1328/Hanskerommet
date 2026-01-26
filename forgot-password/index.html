@@ -318,6 +318,7 @@
       const params = new URLSearchParams(window.location.search);
       const code = params.get("code");
       const type = params.get("type");
+      const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
 
       const showResetForm = () => {
         requestForm.classList.add("hidden");
@@ -335,12 +336,31 @@
       };
 
       const handleRecovery = async () => {
-        if (!code) {
+        if (!code && !hashParams.toString()) {
           showRequestForm();
           return;
         }
         showStatus("Verifying your reset link…", "ok");
-        const { error } = await supabase.auth.exchangeCodeForSession(code);
+
+        let error = null;
+        if (typeof supabase.auth.getSessionFromUrl === "function") {
+          const result = await supabase.auth.getSessionFromUrl({ storeSession: true });
+          error = result?.error ?? null;
+        } else {
+          const accessToken = hashParams.get("access_token");
+          const refreshToken = hashParams.get("refresh_token");
+          if (accessToken && refreshToken) {
+            const result = await supabase.auth.setSession({
+              access_token: accessToken,
+              refresh_token: refreshToken,
+            });
+            error = result?.error ?? null;
+          } else if (code) {
+            const result = await supabase.auth.exchangeCodeForSession(code);
+            error = result?.error ?? null;
+          }
+        }
+
         if (error) {
           showStatus("This reset link is invalid or expired. Please request a new one.", "err");
           showRequestForm();
@@ -394,7 +414,7 @@
         resetForm.reset();
       });
 
-      if (type === "recovery" || code) {
+      if (type === "recovery" || code || hashParams.get("access_token")) {
         handleRecovery();
       } else {
         showRequestForm();
