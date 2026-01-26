@@ -96,7 +96,7 @@ export default function SignUpScreen() {
       />
 
       <Pressable style={styles.primaryButton} onPress={handleSignUp} disabled={loading}>
-        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Opprett konto</Text>}
+        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>OPPRETT KONTO</Text>}
       </Pressable>
 
       <View style={{ marginTop: 14, alignItems: 'center' }}>

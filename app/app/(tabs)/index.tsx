@@ -9,7 +9,6 @@ import {
   ActionSheetIOS,
   KeyboardAvoidingView,
   Platform,
-  useColorScheme,
   ActivityIndicator,
   FlatList,
   Modal,
@@ -19,12 +18,14 @@ import {
   UIManager,
   ImageBackground,
   Dimensions,
-  Keyboard
+  Keyboard,
+  Switch,
+  ToastAndroid,
+  TouchableWithoutFeedback
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { Ionicons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient'; // Ensure you have expo-linear-gradient installed, or remove if standard Expo
+import { Feather } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import PagerView from 'react-native-pager-view';
 import * as ImagePicker from 'expo-image-picker';
@@ -35,9 +36,12 @@ import { getBrandLogo } from '../../brand-logos';
 import { supabase } from '@/lib/supabase';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system/legacy';
-import { DARK_THEME, LIGHT_THEME, ThemeContext, StylesContext, useTheme, useStyles, createStyles } from '@/components/garage/theme';
+import * as Clipboard from 'expo-clipboard';
+import { Fonts, THEME_PRESETS } from '@/constants/theme';
+import { ThemeContext, StylesContext, useTheme, useStyles, createStyles } from '@/components/garage/theme';
 import { ProjectDetailModal, GoalFormModal } from '@/components/garage/project-detail-modal';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
+import { ThemeProvider, useAppTheme } from '@/context/ThemeContext';
 
 // Enable LayoutAnimation for Android
 if (Platform.OS === 'android') {
@@ -52,6 +56,7 @@ const USE_MOCK_API = false; // Set to true if you hit API limits
 // --- 1. TYPES ---
 
 type LogType = string;
+type DocType = 'note' | 'receipt' | 'invoice' | 'registration' | 'other';
 
 interface ServiceLog {
   id: string;
@@ -68,8 +73,10 @@ interface ServiceLog {
 interface Doc {
   id: string;
   title: string;
-  expiry: string;
-  type: 'license' | 'insurance' | 'vognkort';
+  expiry?: string | null;
+  type: DocType;
+  uri?: string | null;
+  note?: string | null;
 }
 
 interface Project {
@@ -131,17 +138,41 @@ interface Car {
 }
 
 const DEFAULT_DOCS: Doc[] = [
-  { id: '1', title: 'Forsikringspolise', expiry: '2025-01-01', type: 'insurance' },
-  { id: '2', title: 'Vognkort (Del 2)', expiry: 'Aldri', type: 'vognkort' }
+  { id: '1', title: 'Forsikringsbevis', expiry: '2025-01-01', type: 'other' },
+  { id: '2', title: 'Vognkort (Del 2)', expiry: null, type: 'registration' }
 ];
 
 const LOG_TYPE_LABELS: Record<string, string> = {
   service: 'Service',
   repair: 'Reparasjon',
-  inspection: 'Kontroll',
+  inspection: 'EU-Kontroll',
+  parts: 'Deler',
+  tires: 'Dekk',
+  other: 'Annet',
   upgrade: 'Oppgradering',
   fuel: 'Drivstoff',
 };
+
+const DOC_TYPE_LABELS: Record<DocType, string> = {
+  note: 'Notat',
+  receipt: 'Kvittering',
+  invoice: 'Faktura',
+  registration: 'Vognkort/Dokument',
+  other: 'Annet'
+};
+
+const normalizeDocType = (value: string): DocType => {
+  const key = String(value || '').toLowerCase();
+  if (key === 'note' || key === 'receipt' || key === 'invoice' || key === 'registration' || key === 'other') {
+    return key as DocType;
+  }
+  if (key === 'vognkort' || key === 'license') return 'registration';
+  if (key === 'insurance') return 'other';
+  return 'other';
+};
+
+const formatDocTypeLabel = (value: string) => DOC_TYPE_LABELS[normalizeDocType(value)] || 'Annet';
+
 
 const formatLogTypeLabel = (value: string) => {
   const key = String(value || '').toLowerCase();
@@ -169,6 +200,27 @@ const formatDistance = (km: number | undefined | null, units: 'km' | 'mi') => {
 
 const toKilometers = (value: number, units: 'km' | 'mi') =>
   units === 'mi' ? Math.round(value / 0.621371) : Math.round(value);
+
+const formatNumberWithSpaces = (value: string) => {
+  const digits = String(value || '').replace(/\s+/g, '').replace(/\D/g, '');
+  if (!digits) return '';
+  return digits.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+};
+
+const parseNumberWithSpaces = (value: string) =>
+  parseInt(String(value || '').replace(/\s+/g, '').replace(/\D/g, ''), 10) || 0;
+
+const notifyCopied = () => {
+  if (Platform.OS === 'android') ToastAndroid.show('Kopiert', ToastAndroid.SHORT);
+  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+};
+
+const copyToClipboard = async (value: string) => {
+  const clean = String(value || '').trim();
+  if (!clean) return;
+  await Clipboard.setStringAsync(clean);
+  notifyCopied();
+};
 
 // --- 2. API SERVICE ---
 
@@ -317,7 +369,7 @@ const removeStoragePaths = async (paths: string[]) => {
 
 // --- 4. MAIN APP ---
 
-export default function App() {
+function AppInner() {
   const insets = useSafeAreaInsets();
   const pagerRef = useRef<PagerView>(null);
   const settingsProjectIdRef = useRef<string | null>(null);
@@ -359,13 +411,9 @@ export default function App() {
   const [userId, setUserId] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [username, setUsername] = useState<string | null>(null);
-  const colorScheme = useColorScheme();
+  const { theme, themeKey, setThemeKey } = useAppTheme();
 
-  const resolvedTheme = appTheme === 'system' ? (colorScheme ?? 'light') : appTheme;
-  const theme = useMemo(
-    () => (resolvedTheme === 'dark' ? DARK_THEME : LIGHT_THEME),
-    [resolvedTheme]
-  );
+  const resolvedTheme = appTheme === 'system' ? theme.scheme : appTheme;
   const styles = useMemo(() => createStyles(theme), [theme]);
   const statusBarStyle: 'light' | 'dark' = resolvedTheme === 'dark' ? 'light' : 'dark';
 
@@ -380,6 +428,7 @@ export default function App() {
     nickname: false,
     username: false,
     goalForm: false,
+    appearance: false,
   });
   const [editingLog, setEditingLog] = useState<ServiceLog | null>(null);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
@@ -393,6 +442,12 @@ export default function App() {
   const [projectGridReturn, setProjectGridReturn] = useState<string | null>(null);
   const [logGridReturn, setLogGridReturn] = useState<string | null>(null);
   const [logFormSeed, setLogFormSeed] = useState<number>(0);
+  const [copyMenu, setCopyMenu] = useState<{ visible: boolean; value: string; x: number; y: number }>({
+    visible: false,
+    value: '',
+    x: 0,
+    y: 0
+  });
 
   // --- ACTIONS ---
   useEffect(() => {
@@ -698,8 +753,10 @@ export default function App() {
           docsRows.map((row: any) => ({
             id: row.id,
             title: row.title,
-            expiry: row.expiry,
-            type: row.type
+            expiry: row.expiry ?? null,
+            type: normalizeDocType(row.type),
+            uri: row.uri ?? null,
+            note: row.note ?? null
           }))
         );
       } else {
@@ -716,8 +773,10 @@ export default function App() {
             insertedDocs.map((row: any) => ({
               id: row.id,
               title: row.title,
-              expiry: row.expiry,
-              type: row.type
+              expiry: row.expiry ?? null,
+              type: normalizeDocType(row.type),
+              uri: row.uri ?? null,
+              note: row.note ?? null
             }))
           );
         } else {
@@ -919,7 +978,8 @@ export default function App() {
       Alert.alert('Ikke logget inn', 'Vennligst logg inn på nytt.');
         return;
       }
-      const data = await fetchCarDetails(plate);
+      const cleanPlate = String(plate || '').replace(/\s+/g, '');
+      const data = await fetchCarDetails(cleanPlate);
       const { data: existingCar, error: existingError } = await supabase
         .from('cars')
         .select('*')
@@ -1020,6 +1080,14 @@ export default function App() {
       Alert.alert('Feil', message);
     }
   };
+
+  const openCopyMenu = (value: string, event: any) => {
+    if (Platform.OS !== 'android') return;
+    const { pageX, pageY } = event?.nativeEvent || { pageX: 0, pageY: 0 };
+    setCopyMenu({ visible: true, value, x: pageX, y: pageY });
+  };
+
+  const closeCopyMenu = () => setCopyMenu({ visible: false, value: '', x: 0, y: 0 });
 
   const handleUpdateMileage = async (newKm: number) => {
     if (!car || !userId) return;
@@ -1342,6 +1410,61 @@ export default function App() {
     return true;
   };
 
+  const handleAddDocument = async (
+    payload:
+      | {
+          title: string;
+          type: DocType;
+          expiry?: string | null;
+          note?: string | null;
+          uri?: string | null;
+        }
+      | Array<{
+          title: string;
+          type: DocType;
+          expiry?: string | null;
+          note?: string | null;
+          uri?: string | null;
+        }>
+  ) => {
+    if (!userId || !activeCarId) return;
+    try {
+      const items = Array.isArray(payload) ? payload : [payload];
+      const insertPayload = items.map((item) => ({
+        user_id: userId,
+        car_id: activeCarId,
+        title: item.title,
+        expiry: item.expiry ?? null,
+        type: item.type,
+        note: item.note ?? null,
+        uri: item.uri ?? null,
+      }));
+      const { data, error } = await supabase.from('docs').insert(insertPayload).select('*');
+      if (error || !data) {
+        Alert.alert('Kunne ikke lagre', error?.message || 'Prøv igjen senere.');
+        return;
+      }
+      const inserted = data.map((row: any, idx: number) => ({
+        id: row.id,
+        title: row.title,
+        expiry: row.expiry ?? null,
+        type: normalizeDocType(row.type),
+        uri: row.uri ?? items[idx]?.uri ?? null,
+        note: row.note ?? items[idx]?.note ?? null,
+      }));
+      setDocs((prev) => [...inserted, ...prev]);
+    } catch (error) {
+      console.warn('Add document failed', error);
+    }
+  };
+
+  const handleDeleteDocument = async (doc: Doc) => {
+    setDocs((prev) => prev.filter((d) => d.id !== doc.id));
+    if (userId) {
+      await supabase.from('docs').delete().eq('id', doc.id).eq('user_id', userId);
+    }
+  };
+
   const addMediaToProject = async (projectId: string, source: 'camera' | 'library') => {
     if (!activeCarId || !userId) return;
     try {
@@ -1453,6 +1576,7 @@ export default function App() {
     if (!userId || !goalFormProjectId) return null;
     const cleanTitle = input.title.trim();
     if (!cleanTitle) return null;
+    const normalizedDue = input.dueDate ? new Date(input.dueDate).toISOString().slice(0, 10) : null;
 
     if (editingGoal?.id) {
       const { data: goalRow, error } = await supabase
@@ -1460,7 +1584,7 @@ export default function App() {
         .update({
           title: cleanTitle,
           notes: input.notes ?? null,
-          due_date: input.dueDate ?? null,
+          due_date: normalizedDue,
         })
         .eq('id', editingGoal.id)
         .eq('user_id', userId)
@@ -1492,7 +1616,7 @@ export default function App() {
         title: cleanTitle,
         status: 'open',
         notes: input.notes ?? null,
-        due_date: input.dueDate ?? null,
+        due_date: normalizedDue,
       })
       .select('*')
       .single();
@@ -1749,6 +1873,7 @@ export default function App() {
                 ref={pagerRef}
                 style={{ flex: 1 }}
                 initialPage={0}
+                scrollEnabled={!modals.projectDetail}
                 onPageSelected={(event) => {
                   const nextView = tabKeys[event.nativeEvent.position];
                   if (nextView) setView(nextView);
@@ -1767,6 +1892,8 @@ export default function App() {
                     logMedia={logMedia}
                     units={units}
                     onOpenSettings={openSettings}
+                    onSwitchCar={() => setView('onboarding')}
+                    onShowCopyMenu={openCopyMenu}
                   />
                 </View>
                 <View key="logs" style={{ flex: 1, backgroundColor: theme.bg }}>
@@ -1795,7 +1922,12 @@ export default function App() {
                   />
                 </View>
                 <View key="vault" style={{ flex: 1, backgroundColor: theme.bg }}>
-                  <VaultScreen docs={docs} themeKey={resolvedTheme} />
+                  <VaultScreen
+                    docs={docs}
+                    themeKey={resolvedTheme}
+                    onAddDocument={handleAddDocument}
+                    onDeleteDocument={handleDeleteDocument}
+                  />
                 </View>
               </PagerView>
 
@@ -1809,10 +1941,12 @@ export default function App() {
                     appTheme={appTheme}
                     onChangeUnits={setUnits}
                     onChangeAppTheme={setAppTheme}
+                    onOpenAppearance={() => setModals((prev) => ({ ...prev, appearance: true }))}
                     onEditNickname={() => setModals((prev) => ({ ...prev, nickname: true }))}
                     onSignOut={handleSignOut}
                     onClose={closeSettings}
                     username={username}
+                    onShowCopyMenu={openCopyMenu}
                   />
                 </Animated.View>
               )}
@@ -1821,10 +1955,10 @@ export default function App() {
               <View style={[styles.tabBarContainer, { height: 49 + insets.bottom }]}>
                 <BlurView intensity={50} tint={theme.blurTint} style={[styles.tabBar, { paddingBottom: insets.bottom }]}>
                   <View style={styles.tabBarContent}>
-                    <TabBtn icon="car-sport" label="Garasje" active={view === 'garage'} onPress={() => navigateTo('garage')} />
-                    <TabBtn icon="document-text" label="Logger" active={view === 'logs'} onPress={() => navigateTo('logs')} />
-                    <TabBtn icon="layers" label="Prosjekter" active={view === 'projects'} onPress={() => navigateTo('projects')} />
-                    <TabBtn icon="file-tray-full" label="Dokumenter" active={view === 'vault'} onPress={() => navigateTo('vault')} />
+                    <TabBtn iconName="truck" label="Min Bil" active={view === 'garage'} onPress={() => navigateTo('garage')} />
+                    <TabBtn iconName="tool" label="Logg" active={view === 'logs'} onPress={() => navigateTo('logs')} />
+                    <TabBtn iconName="folder" label="Prosjekter" active={view === 'projects'} onPress={() => navigateTo('projects')} />
+                    <TabBtn iconName="file-text" label="Dokumenter" active={view === 'vault'} onPress={() => navigateTo('vault')} />
                   </View>
                 </BlurView>
 
@@ -1846,6 +1980,7 @@ export default function App() {
                     mileagePlaceholder={car ? formatDistance(car.mileage, units).replace(/\s?(km|mi)$/, '') : 'Auto'}
                     logTypes={logTypes}
                     logType={selectedLogType}
+                    onSetLogType={setSelectedLogType}
                     onManageTypes={openTypes}
                     units={units}
                     initialLog={editingLog}
@@ -1868,6 +2003,7 @@ export default function App() {
                     initialMediaUris={
                       editingLog ? logMedia.filter((m) => m.logId === editingLog.id).map((m) => m.uri) : []
                     }
+                    currentMileage={car?.mileage || 0}
                   />
                 </Animated.View>
               )}
@@ -1922,7 +2058,6 @@ export default function App() {
                         const updated = await handleUpdateProject(editingProject.id, {
                           title: cleanTitle,
                           description: (proj.description || '').trim() || null,
-                          category: (proj.category || '').trim() || null,
                           budgetPlanned: proj.budgetPlanned ?? null
                         });
                         if (updated) {
@@ -1933,7 +2068,6 @@ export default function App() {
                       }
                       const project = await handleCreateProject(cleanTitle, {
                         description: (proj.description || '').trim() || null,
-                        category: (proj.category || '').trim() || null,
                         budgetPlanned: proj.budgetPlanned ?? null
                       });
                       if (!project) return;
@@ -2132,9 +2266,86 @@ export default function App() {
           }
           keyboard="numeric"
           onClose={() => setModals({...modals, mileage: false})}
-          onSave={(val) => void handleUpdateMileage(toKilometers(parseInt(val) || 0, units))}
+          onSave={(val) => void handleUpdateMileage(toKilometers(parseNumberWithSpaces(val), units))}
           units={units}
         />
+              {copyMenu.visible && (
+                <Modal transparent animationType="fade">
+                  <Pressable style={{ flex: 1 }} onPress={closeCopyMenu}>
+                    <View
+                      style={[
+                        styles.copyMenu,
+                        {
+                          left: Math.max(12, copyMenu.x - 40),
+                          top: Math.max(20, copyMenu.y - 48),
+                        },
+                      ]}
+                    >
+                      <TouchableOpacity
+                        onPress={() => {
+                          copyToClipboard(copyMenu.value);
+                          closeCopyMenu();
+                        }}
+                      >
+                        <Text style={styles.copyMenuText}>Kopier</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </Pressable>
+                </Modal>
+              )}
+              {modals.appearance && (
+                <Modal transparent animationType="fade">
+                  <Pressable
+                    style={styles.modalOverlay}
+                    onPress={() => setModals((prev) => ({ ...prev, appearance: false }))}
+                  >
+                    <Pressable style={[styles.modalPopup, { maxHeight: '80%', width: '100%' }]}>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                        <Text style={styles.popupTitle}>Apputseende</Text>
+                        <TouchableOpacity onPress={() => setModals((prev) => ({ ...prev, appearance: false }))}>
+                          <Feather name="x" size={20} color={theme.textDim} />
+                        </TouchableOpacity>
+                      </View>
+                      <ScrollView>
+                        {THEME_PRESETS.map((preset) => {
+                          const selected = themeKey === preset.key;
+                          return (
+                            <TouchableOpacity
+                              key={preset.key}
+                              style={[styles.settingsRow, { paddingHorizontal: 0 }]}
+                              onPress={() => setThemeKey(preset.key)}
+                            >
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                                <Feather
+                                  name="check"
+                                  size={16}
+                                  color={selected ? '#2563EB' : 'transparent'}
+                                />
+                                <Text style={styles.settingsLabel}>{preset.name}</Text>
+                              </View>
+                              <View style={{ flexDirection: 'row', gap: 10 }}>
+                                {[preset.primary, preset.secondary, preset.accent].map((color) => (
+                                  <View
+                                    key={color}
+                                    style={{
+                                      width: 22,
+                                      height: 22,
+                                      borderRadius: 11,
+                                      backgroundColor: color,
+                                      borderWidth: 1,
+                                      borderColor: '#FFFFFF',
+                                    }}
+                                  />
+                                ))}
+                              </View>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </ScrollView>
+                    </Pressable>
+                  </Pressable>
+                </Modal>
+              )}
             </SafeAreaView>
           </Animated.View>
           <Animated.View
@@ -2160,9 +2371,17 @@ export default function App() {
   );
 }
 
+export default function App() {
+  return (
+    <ThemeProvider>
+      <AppInner />
+    </ThemeProvider>
+  );
+}
+
 // --- SCREENS ---
 
-const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, onEditLog, onDeleteLog, onOpenLogPhotos, units, projects, logMedia, onOpenSettings }: any) => {
+const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, onEditLog, onDeleteLog, onOpenLogPhotos, units, projects, logMedia, onOpenSettings, onSwitchCar, onShowCopyMenu }: any) => {
   const { theme } = useTheme();
   const styles = useStyles();
   const projectNameById = React.useMemo(() => {
@@ -2185,7 +2404,14 @@ const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, onEd
     ? Math.ceil((new Date(nextEuRaw).getTime() - new Date().getTime()) / (1000 * 3600 * 24))
     : 0;
   const euStatus = nextEuRaw ? (daysToEu < 30 ? 'danger' : daysToEu < 120 ? 'warning' : 'success') : 'warning';
-  const lastExpense = logs.find((log: ServiceLog) => log.cost > 0)?.cost || 0;
+  const lastLogDate = logs.length
+    ? new Date(
+        logs.reduce((latest: number, l: ServiceLog) => {
+          const t = new Date(l.date).getTime();
+          return t > latest ? t : latest;
+        }, 0)
+      ).toLocaleDateString('nb-NO')
+    : '—';
   const plateDisplay = String(safeCar.plate || '').replace(/\s+/g, '');
   const BrandLogo = getBrandLogo(safeCar.make);
 
@@ -2195,76 +2421,101 @@ const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, onEd
       contentContainerStyle={{ paddingBottom: 140 }}
     >
       <View style={styles.headerBar}>
-        <View style={{ flex: 1, paddingRight: 12 }}>
-          <Text style={styles.headerTitle} numberOfLines={1}>
-            Hanskerommet
-          </Text>
-        </View>
-        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          <TouchableOpacity style={styles.headerPill} onPress={onOpenLog}>
-            <Ionicons name="add" size={16} color="white" />
-            <Text style={styles.headerPillText}>Hurtiglogg</Text>
+        <Text style={styles.headerTitle}>MIN BIL</Text>
+        <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+          <TouchableOpacity style={[styles.secondaryBtnSmall, { justifyContent: 'center', alignItems: 'center' }]} onPress={onSwitchCar}>
+            <Text style={styles.secondaryBtnText}>BYTT BIL</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.headerIconBtnGhost, { marginLeft: 8 }]} onPress={onOpenSettings}>
-          <Ionicons name="settings" size={20} color={theme.textDim} />
-        </TouchableOpacity>
+          <TouchableOpacity style={styles.headerIconBtnGhost} onPress={onOpenSettings}>
+            <Feather name="settings" size={20} color={theme.textDim} />
+          </TouchableOpacity>
         </View>
       </View>
 
-      {/* Hero Card */}
-      <View style={styles.heroContainer}>
-        <View style={styles.heroTopRow}>
-          <Text style={styles.heroBrand}>{safeCar.make}</Text>
-          {BrandLogo ? (
-            <View style={styles.brandLogoWrap}>
-              <BrandLogo width="100%" height="100%" preserveAspectRatio="xMidYMid meet" />
-            </View>
-          ) : (
-            <Text style={styles.heroLogo}>LOGO</Text>
-          )}
+      <View style={styles.specSheet}>
+        <View style={styles.specRow}>
+          <View>
+            <Text style={styles.specMake}>{safeCar.make || '—'}</Text>
+            {safeCar.nickname ? <Text style={styles.specNickname}>"{safeCar.nickname}"</Text> : null}
+            <Text style={styles.specModel}>{safeCar.model || 'Ukjent modell'}</Text>
+          </View>
+          <View style={styles.specLogo}>
+            {BrandLogo ? (
+              <View style={{ width: '100%', height: '100%', opacity: 0.7 }}>
+                <BrandLogo width="100%" height="100%" preserveAspectRatio="xMidYMid meet" />
+              </View>
+            ) : (
+              <Feather name="truck" size={28} color={theme.textDim} />
+            )}
+          </View>
         </View>
-        {!!safeCar.nickname && <Text style={styles.heroNickname}>{safeCar.nickname}</Text>}
-        <Text style={styles.heroModel}>{safeCar.model}</Text>
-        <View style={styles.heroBottomRow}>
-          <Text style={styles.heroLinePlate}>{safeCar.year}</Text>
-          <Text style={styles.heroLinePlate}>{plateDisplay}</Text>
-        </View>
-
+        {Platform.OS === 'ios' ? (
+          <View style={styles.specPlateBox}>
+            <Text style={styles.specPlateText} selectable>{plateDisplay || '—'}</Text>
+          </View>
+        ) : (
+          <Pressable style={styles.specPlateBox} onPress={(e) => onShowCopyMenu?.(plateDisplay, e)}>
+            <Text style={styles.specPlateText}>{plateDisplay || '—'}</Text>
+          </Pressable>
+        )}
+        {Platform.OS === 'ios' ? (
+          <View style={styles.vinRow}>
+            <Text style={styles.vinLabel}>CHASSIS NO</Text>
+            <Text style={styles.vinValue} selectable>{safeCar.vin || '—'}</Text>
+          </View>
+        ) : (
+          <TouchableOpacity style={styles.vinRow} onPress={(e) => onShowCopyMenu?.(safeCar.vin || '', e)}>
+            <Text style={styles.vinLabel}>CHASSIS NO</Text>
+            <Text style={styles.vinValue}>{safeCar.vin || '—'}</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
-      {/* Health Tiles */}
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>STATUS</Text>
-        <View style={styles.tileGrid}>
-          <InfoTile
-            label="Kilometerstand"
-            value={formatDistance(safeCar.mileage, units)}
-            sub="Trykk for å oppdatere"
-            tone={theme.primary}
-            icon="speedometer"
-            onPress={onOpenMileage}
-          />
-          <InfoTile
-            label="EU-kontroll"
-            value={daysToEu < 0 ? 'Forfalt' : `${daysToEu} dager`}
-            sub={nextEuRaw || 'Ikke tilgjengelig'}
-            tone={theme[euStatus]}
-            icon="calendar"
-          />
-          <InfoTile
-            label="Totalkostnad"
-            value={`${logs.reduce((a:any,b:any)=>a+b.cost,0)} kr`}
-            sub="Totalt"
-            tone={theme.accent}
-            icon="wallet"
-          />
-          <InfoTile
-            label="Siste utgift"
-            value={`${lastExpense} kr`}
-            sub="Nyeste"
-            tone={theme.success}
-            icon="cash"
-          />
+        <View style={styles.statusGrid}>
+          <TouchableOpacity style={styles.statusTile} onPress={onOpenMileage} activeOpacity={0.8}>
+            <View style={styles.statusTileHeader}>
+              <Feather name="activity" size={18} color={theme.textDim} />
+              <Feather name="edit-2" size={16} color={theme.textDim} />
+            </View>
+            <Text style={styles.statusTileLabel}>KILOMETER</Text>
+            <Text style={styles.statusTileValue}>{formatDistance(safeCar.mileage, units)}</Text>
+            <Text style={styles.statusTileSub}>Oppdater</Text>
+          </TouchableOpacity>
+
+          <View style={styles.statusTile}>
+            <View style={styles.statusTileHeader}>
+              <Feather name="calendar" size={18} color={theme.textDim} />
+            </View>
+            <Text style={styles.statusTileLabel}>EU-KONTROLL</Text>
+            <Text style={[styles.statusTileValue, { color: theme[euStatus] }]}>
+              {daysToEu < 0 ? 'FORFALT' : `${daysToEu} DAGER`}
+            </Text>
+            <Text style={styles.statusTileSub}>{nextEuRaw || 'Ukjent dato'}</Text>
+          </View>
+
+          <View style={styles.statusTile}>
+            <View style={styles.statusTileHeader}>
+              <Feather name="tool" size={18} color={theme.textDim} />
+            </View>
+            <Text style={styles.statusTileLabel}>SISTE LOGG</Text>
+            <Text style={styles.statusTileValue}>{lastLogDate}</Text>
+            <Text style={styles.statusTileSub}>Dato</Text>
+          </View>
+
+          <TouchableOpacity
+            style={[styles.statusTile, styles.statusTileAction]}
+            onPress={onOpenLog}
+            activeOpacity={0.85}
+          >
+            <View style={styles.statusTileHeader}>
+              <Feather name="plus" size={18} color={theme.onAccent} />
+            </View>
+            <Text style={{ color: theme.onAccent, textAlign: 'center', fontSize: 16, fontWeight: '800' }}>
+              + NY HURTIGLOGG
+            </Text>
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -2272,7 +2523,7 @@ const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, onEd
       <View style={styles.section}>
         <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10}}>
           <Text style={styles.sectionTitle}>SISTE AKTIVITET</Text>
-          <TouchableOpacity onPress={onViewAllLogs}><Text style={{color: theme.primary, fontWeight: '600'}}>Vis alle</Text></TouchableOpacity>
+          <TouchableOpacity onPress={onViewAllLogs}><Text style={{color: theme.primary, fontWeight: '700'}}>Vis alle</Text></TouchableOpacity>
         </View>
         {logs.slice(0,3).map((l: ServiceLog) => (
           <LogRow
@@ -2292,42 +2543,355 @@ const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, onEd
   );
 };
 
-const VaultScreen = ({ docs, themeKey }: { docs: Doc[]; themeKey: string }) => {
+const VaultScreen = ({
+  docs,
+  themeKey,
+  onAddDocument,
+  onDeleteDocument
+}: {
+  docs: Doc[];
+  themeKey: string;
+  onAddDocument: (payload: { title: string; type: DocType; expiry?: string | null; note?: string | null; uri?: string | null } | Array<{ title: string; type: DocType; expiry?: string | null; note?: string | null; uri?: string | null }>) => void;
+  onDeleteDocument: (doc: Doc) => void;
+}) => {
   const { theme } = useTheme();
   const styles = useStyles();
+  const [filterType, setFilterType] = useState<DocType | 'all'>('all');
+  const [viewerDoc, setViewerDoc] = useState<Doc | null>(null);
+  const [docFormVisible, setDocFormVisible] = useState(false);
+  const [docType, setDocType] = useState<DocType>('receipt');
+  const [docTitle, setDocTitle] = useState('');
+  const [docNote, setDocNote] = useState('');
+  const [docHasExpiry, setDocHasExpiry] = useState(false);
+  const [docExpiry, setDocExpiry] = useState<Date | null>(null);
+  const [docImageUris, setDocImageUris] = useState<string[]>([]);
+  const [viewerFullScreen, setViewerFullScreen] = useState(false);
+  const [showDocDatePicker, setShowDocDatePicker] = useState(false);
+
+  const openDocForm = (type: DocType) => {
+    setDocType(type);
+    setDocTitle('');
+    setDocNote('');
+    setDocHasExpiry(false);
+    setDocExpiry(null);
+    setDocImageUris([]);
+    setShowDocDatePicker(false);
+    setDocFormVisible(true);
+  };
+
+  const openAddDocument = () => {
+    const options = ['Notat', 'Kvittering', 'Faktura', 'Vognkort/Dokument', 'Annet', 'Avbryt'];
+    const cancelButtonIndex = 5;
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions({ options, cancelButtonIndex }, (index) => {
+        if (index === 0) openDocForm('note');
+        if (index === 1) openDocForm('receipt');
+        if (index === 2) openDocForm('invoice');
+        if (index === 3) openDocForm('registration');
+        if (index === 4) openDocForm('other');
+      });
+      return;
+    }
+    Alert.alert('Legg til dokument', 'Velg type', [
+      { text: 'Notat', onPress: () => openDocForm('note') },
+      { text: 'Kvittering', onPress: () => openDocForm('receipt') },
+      { text: 'Faktura', onPress: () => openDocForm('invoice') },
+      { text: 'Vognkort/Dokument', onPress: () => openDocForm('registration') },
+      { text: 'Annet', onPress: () => openDocForm('other') },
+      { text: 'Avbryt', style: 'cancel' },
+    ]);
+  };
+
+  const pickDocImage = async (source: 'camera' | 'library') => {
+    try {
+      const options: any = {
+        mediaTypes: ImagePicker.MediaType?.Images ?? ImagePicker.MediaTypeOptions.Images,
+        quality: 0.7,
+        allowsMultipleSelection: source === 'library',
+      };
+      let result;
+      if (source === 'camera') {
+        const perm = await ImagePicker.requestCameraPermissionsAsync();
+        if (!perm.granted) {
+          Alert.alert('Tillatelse kreves', 'Kameratilgang kreves for å legge til dokument.');
+          return;
+        }
+        result = await ImagePicker.launchCameraAsync(options);
+      } else {
+        result = await ImagePicker.launchImageLibraryAsync(options);
+      }
+      if (!result.canceled && result.assets?.length) {
+        const nextUris = result.assets.map((asset: any) => asset.uri).filter(Boolean);
+        setDocImageUris(nextUris);
+      }
+    } catch (error) {
+      console.warn('Doc image pick failed', error);
+    }
+  };
+
+  const saveDocument = () => {
+    const title = docTitle.trim() || DOC_TYPE_LABELS[docType];
+    const note = docType === 'note' ? docNote.trim() : '';
+    const expiry = docHasExpiry && docExpiry ? docExpiry.toISOString().slice(0, 10) : null;
+    if (docType === 'note') {
+      onAddDocument({
+        title,
+        type: docType,
+        expiry,
+        note: note || null,
+        uri: null,
+      });
+    } else if (docImageUris.length > 1) {
+      onAddDocument(
+        docImageUris.map((uri) => ({
+          title,
+          type: docType,
+          expiry,
+          note: null,
+          uri,
+        }))
+      );
+    } else {
+      onAddDocument({
+        title,
+        type: docType,
+        expiry,
+        note: note || null,
+        uri: docImageUris[0] || null,
+      });
+    }
+    setDocFormVisible(false);
+    setShowDocDatePicker(false);
+  };
+
+  const handleDeleteDocument = (doc: Doc) => {
+    Alert.alert('Slette dokument?', 'Dette kan ikke angres.', [
+      { text: 'Avbryt', style: 'cancel' },
+      { text: 'Slett', style: 'destructive', onPress: () => onDeleteDocument(doc) },
+    ]);
+  };
+
+  const filteredDocs = useMemo(() => {
+    const base = filterType === 'all' ? docs : docs.filter((d) => d.type === filterType);
+    return [...base].sort((a, b) => String(a.type).localeCompare(String(b.type)));
+  }, [docs, filterType]);
+
+  const typeFilters: { key: DocType | 'all'; label: string }[] = [
+    { key: 'all', label: 'Alle' },
+    { key: 'note', label: 'Notat' },
+    { key: 'receipt', label: 'Kvittering' },
+    { key: 'invoice', label: 'Faktura' },
+    { key: 'registration', label: 'Vognkort/Dokument' },
+    { key: 'other', label: 'Annet' },
+  ];
+
   return (
-    <View style={styles.screenContainer}>
-    <View style={styles.pageHeaderRow}>
-      <View>
-        <Text style={styles.pageTitle}>Dokumenter</Text>
-        <Text style={styles.pageSub}>Hold dokumentene trygge og klare.</Text>
-      </View>
-      <TouchableOpacity
-        style={styles.headerIconBtn}
-        onPress={() => Alert.alert("Demo", "Kameraskanner ville åpnet her.")}>
-        <Ionicons name="scan" size={20} color="white" />
-      </TouchableOpacity>
+    <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+      <View style={styles.screenContainer}>
+        <View style={styles.pageHeaderRow}>
+          <View>
+            <Text style={styles.pageTitle}>Dokumenter</Text>
+            <Text style={styles.pageSub}>Hold dokumentene trygge og klare.</Text>
+          </View>
+          <TouchableOpacity
+            style={[styles.headerIconBtnGhost, { backgroundColor: theme.primary, borderColor: theme.primary }]}
+            onPress={openAddDocument}
+          >
+            <Feather name="plus" size={18} color={theme.onAccent} />
+          </TouchableOpacity>
+        </View>
+
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 12 }}>
+        {typeFilters.map((filter) => {
+          const active = filterType === filter.key;
+          const compact = filteredDocs.length === 0;
+          return (
+            <TouchableOpacity
+              key={filter.key}
+              style={[
+                styles.docTypeChip,
+                active && styles.docTypeChipActive,
+                compact && { paddingHorizontal: 8, paddingVertical: 6 }
+              ]}
+              onPress={() => setFilterType(filter.key)}
+            >
+              <Text style={[styles.docTypeChipText, active && styles.docTypeChipTextActive, compact && { fontSize: 12 }]}>
+                {filter.label}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+
+        <FlatList
+          style={{ backgroundColor: theme.bg }}
+          data={filteredDocs}
+          extraData={themeKey}
+          keyExtractor={(d) => d.id}
+          renderItem={({ item }) => {
+            const typeLabel = formatDocTypeLabel(item.type);
+            const expiryText = item.expiry ? `Utløper: ${item.expiry}` : 'Ingen utløpsdato';
+            return (
+              <TouchableOpacity
+                style={styles.docRow}
+                onPress={() => setViewerDoc(item)}
+                onLongPress={() => handleDeleteDocument(item)}
+              >
+                <View style={[styles.docIcon, { backgroundColor: theme.surface }]}>
+                  <Feather name="file-text" size={20} color={theme.text} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.docTitle}>{item.title}</Text>
+                  <Text style={styles.docSub}>{typeLabel} · {expiryText}</Text>
+                </View>
+                <Feather name="chevron-right" size={18} color={theme.textDim} />
+              </TouchableOpacity>
+            );
+          }}
+        />
+
+        <Modal visible={docFormVisible} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalPopup}>
+            <Text style={styles.popupTitle}>Nytt dokument</Text>
+            <View style={{ marginBottom: 12 }}>
+              <Text style={styles.inpLabel}>Tittel</Text>
+              <TextInput
+                style={styles.input}
+                placeholderTextColor={theme.textDim}
+                placeholder={DOC_TYPE_LABELS[docType]}
+                value={docTitle}
+                onChangeText={setDocTitle}
+              />
+            </View>
+            {docType === 'note' && (
+              <View style={{ marginBottom: 12 }}>
+                <Text style={styles.inpLabel}>Notat</Text>
+                <TextInput
+                  style={[styles.input, { minHeight: 120, textAlignVertical: 'top' }]}
+                  placeholderTextColor={theme.textDim}
+                  placeholder="Skriv notatet her..."
+                  value={docNote}
+                  onChangeText={setDocNote}
+                  multiline
+                  autoCorrect
+                />
+              </View>
+            )}
+            {docType !== 'note' && (
+              <View style={{ flexDirection: 'row', gap: 10, marginBottom: 12 }}>
+                <TouchableOpacity style={[styles.secondaryBtn, { flex: 1 }]} onPress={() => pickDocImage('camera')}>
+                  <Text style={styles.secondaryBtnText}>KAMERA</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.secondaryBtn, { flex: 1 }]} onPress={() => pickDocImage('library')}>
+                  <Text style={styles.secondaryBtnText}>GALLERI</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+            {docImageUris.length > 0 && (
+              <>
+                <ImageBackground
+                  source={{ uri: docImageUris[0] }}
+                  style={{ width: '100%', height: 160, borderRadius: 8, marginBottom: 8 }}
+                  imageStyle={{ borderRadius: 8 }}
+                />
+                {docImageUris.length > 1 && (
+                  <Text style={{ color: theme.textDim, fontSize: 12, textAlign: 'right', marginBottom: 4 }}>
+                    {docImageUris.length} bilder valgt
+                  </Text>
+                )}
+              </>
+            )}
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <Text style={styles.inpLabel}>Har utløpsdato?</Text>
+              <Switch
+                value={docHasExpiry}
+                onValueChange={(val) => {
+                  setDocHasExpiry(val);
+                  if (!val) setDocExpiry(null);
+                }}
+                trackColor={{ false: theme.cardBorder, true: theme.primary }}
+                thumbColor={theme.text}
+              />
+            </View>
+            {docHasExpiry && (
+              <TouchableOpacity style={styles.secondaryBtn} onPress={() => setShowDocDatePicker(true)}>
+                <Text style={styles.secondaryBtnText}>
+                  {docExpiry ? docExpiry.toLocaleDateString() : 'Velg dato'}
+                </Text>
+              </TouchableOpacity>
+            )}
+            {showDocDatePicker && (
+              <DateTimePicker
+                value={docExpiry || new Date()}
+                mode="date"
+                display={Platform.OS === 'ios' ? 'inline' : 'default'}
+                onChange={(event, selectedDate) => {
+                  if (Platform.OS !== 'ios') setShowDocDatePicker(false);
+                  if (event.type === 'dismissed') return;
+                  if (selectedDate) setDocExpiry(selectedDate);
+                }}
+              />
+            )}
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+              <TouchableOpacity
+                onPress={() => {
+                  setDocFormVisible(false);
+                  setShowDocDatePicker(false);
+                }}
+                style={[styles.popupBtn, { backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.cardBorder }]}
+              >
+                <Text style={{ color: theme.text }}>Avbryt</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={saveDocument} style={[styles.popupBtn, { backgroundColor: theme.primary }]}>
+                <Text style={{ fontWeight: '600', color: theme.onAccent }}>Lagre</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+        </Modal>
+
+        <Modal visible={!!viewerDoc} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.docViewerCard}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <Text style={styles.docViewerTitle}>{viewerDoc?.title}</Text>
+              <TouchableOpacity onPress={() => { setViewerDoc(null); setViewerFullScreen(false); }}>
+                <Feather name="x" size={20} color={theme.text} />
+              </TouchableOpacity>
+            </View>
+            {viewerDoc?.uri ? (
+              <Pressable onPress={() => setViewerFullScreen(true)}>
+                <ImageBackground
+                  source={{ uri: viewerDoc.uri }}
+                  style={{ width: '100%', height: 220, borderRadius: 8, marginBottom: 12 }}
+                  imageStyle={{ borderRadius: 8 }}
+                />
+              </Pressable>
+            ) : viewerDoc?.note ? (
+              <Text style={styles.docViewerNote}>{viewerDoc.note}</Text>
+            ) : (
+              <Text style={styles.docViewerNote}>Ingen innhold tilgjengelig.</Text>
+            )}
+            {viewerDoc?.expiry ? (
+              <Text style={styles.docSub}>Utløper: {viewerDoc.expiry}</Text>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
+      <Modal visible={viewerFullScreen} transparent animationType="fade">
+        <Pressable style={styles.fullscreenOverlay} onPress={() => setViewerFullScreen(false)}>
+          {viewerDoc?.uri ? (
+            <ImageBackground
+              source={{ uri: viewerDoc.uri }}
+              style={{ width: '100%', height: '100%' }}
+              imageStyle={{ resizeMode: 'contain' }}
+            />
+          ) : null}
+        </Pressable>
+      </Modal>
     </View>
-    
-    <FlatList
-      style={{ backgroundColor: theme.bg }}
-      data={docs}
-      extraData={themeKey}
-      keyExtractor={d => d.id}
-      renderItem={({item}) => (
-        <TouchableOpacity style={styles.docRow}>
-          <View style={[styles.docIcon, { backgroundColor: item.type === 'insurance' ? theme.success : theme.accent }]}>
-            <Ionicons name="document-text" size={22} color="white" />
-          </View>
-          <View style={{flex: 1}}>
-            <Text style={styles.docTitle}>{item.title}</Text>
-            <Text style={styles.docSub}>Utløper: {item.expiry}</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={20} color={theme.textDim} />
-        </TouchableOpacity>
-      )}
-    />
-  </View>
+    </TouchableWithoutFeedback>
   );
 };
 
@@ -2370,43 +2934,45 @@ const TimelineScreen = ({
   }, [logMedia]);
   const globalLogs = logs.filter((l) => !l.projectId);
   return (
-    <View style={styles.screenContainer}>
-      <FlatList
-        style={{ backgroundColor: theme.bg }}
-        data={globalLogs}
-        extraData={themeKey}
-        keyExtractor={(l) => l.id}
-        contentContainerStyle={{ paddingBottom: 100 }}
-        ListHeaderComponent={
-          <View>
-            <View style={styles.pageHeaderRow}>
-              <View>
-                <Text style={styles.pageTitle}>Servicelog</Text>
-                <Text style={styles.pageSub}>Følg vedlikehold og utgifter.</Text>
+    <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+      <View style={styles.screenContainer}>
+        <FlatList
+          style={{ backgroundColor: theme.bg }}
+          data={globalLogs}
+          extraData={themeKey}
+          keyExtractor={(l) => l.id}
+          contentContainerStyle={{ paddingBottom: 100 }}
+          ListHeaderComponent={
+            <View>
+              <View style={styles.pageHeaderRow}>
+                <View>
+                  <Text style={styles.pageTitle}>SERVICELOGG</Text>
+                  <Text style={styles.pageSub}>Historikk og vedlikehold.</Text>
+                </View>
+                <TouchableOpacity style={styles.headerIconBtn} onPress={onOpenLog}>
+                  <Feather name="plus" size={20} color={theme.onAccent} />
+                </TouchableOpacity>
               </View>
-              <TouchableOpacity style={styles.headerIconBtn} onPress={onOpenLog}>
-                <Ionicons name="add" size={20} color="white" />
-              </TouchableOpacity>
-            </View>
 
-            <View style={{ marginBottom: 12 }}>
-              <Text style={styles.sectionTitle}>GLOBALE LOGGER</Text>
+              <View style={{ marginBottom: 12 }}>
+                <Text style={styles.sectionTitle}>TIDSLOGG</Text>
+              </View>
             </View>
-          </View>
-        }
-        renderItem={({ item }) => (
-          <LogRow
-            log={item}
-            units={units}
-            projectName={item.projectId ? projectNameById[item.projectId] : undefined}
-            photoCount={logMediaCount[item.id]}
-            onOpenPhotos={() => onOpenLogPhotos(item.id)}
-            onEdit={onEditLog}
-            onDelete={onDeleteLog}
-          />
-        )}
-      />
-    </View>
+          }
+          renderItem={({ item }) => (
+            <LogRow
+              log={item}
+              units={units}
+              projectName={item.projectId ? projectNameById[item.projectId] : undefined}
+              photoCount={logMediaCount[item.id]}
+              onOpenPhotos={() => onOpenLogPhotos(item.id)}
+              onEdit={onEditLog}
+              onDelete={onDeleteLog}
+            />
+          )}
+        />
+      </View>
+    </TouchableWithoutFeedback>
   );
 };
 
@@ -2448,18 +3014,18 @@ const ProjectsScreen = ({
       style={{ flex: 1, backgroundColor: theme.bg }}
       contentContainerStyle={{ paddingBottom: 120, paddingHorizontal: 20, paddingTop: 20 }}
     >
-      <View style={styles.pageHeaderRow}>
+      <View style={[styles.pageHeaderRow, { alignItems: 'center' }]}>
         <View>
           <Text style={styles.pageTitle}>Prosjekter</Text>
           <Text style={styles.pageSub}>Samle arbeid i fokuserte prosjekter.</Text>
         </View>
-        <TouchableOpacity style={styles.headerIconBtn} onPress={onStartProject}>
-          <Ionicons name="add" size={20} color="white" />
+        <TouchableOpacity style={[styles.headerIconBtnGhost, { backgroundColor: theme.primary, borderColor: theme.primary }]} onPress={onStartProject}>
+          <Feather name="plus" size={18} color={theme.onAccent} />
         </TouchableOpacity>
       </View>
 
       {activeProject && (
-        <View style={styles.activeProjectCard}>
+        <TouchableOpacity style={styles.activeProjectCard} onPress={() => onOpenProject(activeProject.id)}>
           <View style={styles.activeProjectTopRow}>
             <View>
               <Text style={styles.activeProjectLabel}>Aktivt prosjekt</Text>
@@ -2468,11 +3034,8 @@ const ProjectsScreen = ({
                 {formatProjectStatusLabel(activeProject.status)} · {new Date(activeProject.updatedAt).toLocaleDateString()}
               </Text>
             </View>
-            <TouchableOpacity style={styles.primaryBtnSmall} onPress={() => onOpenProject(activeProject.id)}>
-              <Text style={styles.btnTxt}>Åpne</Text>
-            </TouchableOpacity>
           </View>
-          {activeProject.budgetPlanned ? (
+          {activeProject.budgetPlanned && activeProject.budgetPlanned > 0 ? (
             <View style={styles.budgetBarWrap}>
               <View style={styles.budgetBarTrack}>
                 <View
@@ -2500,14 +3063,22 @@ const ProjectsScreen = ({
             <Text style={styles.activeProjectGoalEmpty}>Ingen mål lagt til ennå.</Text>
           )}
           <View style={styles.activeProjectActions}>
-            <TouchableOpacity style={styles.secondaryBtnSmall} onPress={() => onAddLogToProject(activeProject.id)}>
-              <Text style={styles.secondaryBtnText}>Legg til logg</Text>
+            <TouchableOpacity
+              style={[styles.primaryBtn, { flex: 3, paddingVertical: 12, alignItems: 'center', justifyContent: 'center' }]}
+              onPress={() => onAddLogToProject(activeProject.id)}
+            >
+              <Text style={[styles.btnTxt, { color: theme.onAccent, letterSpacing: 0.6 }]}>LEGG TIL LOGG</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.secondaryBtnSmall} onPress={() => onSetActiveProject(null)}>
-              <Text style={styles.secondaryBtnText}>Fjern aktiv</Text>
+            <TouchableOpacity
+              style={[styles.secondaryBtn, { flex: 1, paddingVertical: 12, borderColor: theme.danger, backgroundColor: 'rgba(239,68,68,0.12)', alignItems: 'center', justifyContent: 'center' }]}
+              onPress={() => onSetActiveProject(null)}
+            >
+              <Text style={[styles.secondaryBtnText, { fontWeight: '800', color: theme.danger, letterSpacing: 0.4, textAlign: 'center' }]}>
+                FJERN AKTIV
+              </Text>
             </TouchableOpacity>
           </View>
-        </View>
+        </TouchableOpacity>
       )}
 
       {(activeProjects.length === 0 && completedProjects.length === 0) && (
@@ -2521,11 +3092,16 @@ const ProjectsScreen = ({
         const stats = statsForProject(item.id);
         const statusTone = item.status === 'done' ? theme.success : theme.primary;
         const isActive = activeProjectId === item.id;
+        const badgeLabel = isActive
+          ? 'AKTIV'
+          : item.status === 'active'
+            ? 'PÅGÅR'
+            : formatProjectStatusLabel(item.status).toUpperCase();
         return (
           <TouchableOpacity
             key={item.id}
             onPress={() => onOpenProject(item.id)}
-            style={styles.projectListItem}>
+            style={styles.folderCard}>
             <View style={styles.projectRow}>
               <View style={[styles.projectStatusStrip, { backgroundColor: statusTone }]} />
               <View style={styles.projectContent}>
@@ -2537,7 +3113,11 @@ const ProjectsScreen = ({
                       style={styles.projectStarBtn}
                       onPress={() => onSetActiveProject(isActive ? null : item.id)}
                     >
-                      <Ionicons name={isActive ? 'star' : 'star-outline'} size={16} color={isActive ? theme.warning : theme.textDim} />
+                      {isActive ? (
+                        <Feather name="star" size={16} color={theme.warning} />
+                      ) : (
+                        <Feather name="star" size={16} color={theme.textDim} />
+                      )}
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -2548,7 +3128,7 @@ const ProjectsScreen = ({
                     </Text>
                     <Text style={styles.projectStats}>{stats.cost} kr</Text>
                   </View>
-                  <Text style={styles.projectBadge}>{formatProjectStatusLabel(item.status).toUpperCase()}</Text>
+                  <Text style={styles.projectBadge}>{badgeLabel}</Text>
                 </View>
               </View>
             </View>
@@ -2563,12 +3143,17 @@ const ProjectsScreen = ({
             const stats = statsForProject(item.id);
             const statusTone = item.status === 'done' ? theme.success : theme.primary;
             const isActive = activeProjectId === item.id;
+            const badgeLabel = isActive
+              ? 'AKTIV'
+              : item.status === 'active'
+                ? 'PÅGÅR'
+                : formatProjectStatusLabel(item.status).toUpperCase();
             return (
               <TouchableOpacity
                 key={item.id}
                 onPress={() => onOpenProject(item.id)}
-                style={styles.projectListItem}>
-                <View style={styles.projectRow}>
+                style={styles.folderCard}>
+              <View style={styles.projectRow}>
                   <View style={[styles.projectStatusStrip, { backgroundColor: statusTone }]} />
                   <View style={styles.projectContent}>
                     <View style={styles.projectTopRow}>
@@ -2579,7 +3164,11 @@ const ProjectsScreen = ({
                           style={styles.projectStarBtn}
                           onPress={() => onSetActiveProject(isActive ? null : item.id)}
                         >
-                          <Ionicons name={isActive ? 'star' : 'star-outline'} size={16} color={isActive ? theme.warning : theme.textDim} />
+                          {isActive ? (
+                            <Feather name="star" size={16} color={theme.warning} />
+                          ) : (
+                            <Feather name="star" size={16} color={theme.textDim} />
+                          )}
                         </TouchableOpacity>
                       </View>
                     </View>
@@ -2590,7 +3179,7 @@ const ProjectsScreen = ({
                       </Text>
                       <Text style={styles.projectStats}>{stats.cost} kr</Text>
                       </View>
-                      <Text style={styles.projectBadge}>{formatProjectStatusLabel(item.status).toUpperCase()}</Text>
+                      <Text style={styles.projectBadge}>{badgeLabel}</Text>
                     </View>
                   </View>
                 </View>
@@ -2611,20 +3200,23 @@ const ConfigScreen = ({
   appTheme,
   onChangeUnits,
   onChangeAppTheme,
+  onOpenAppearance,
   onEditNickname,
   onSignOut,
   onClose,
   username,
+  onShowCopyMenu,
 }: any) => {
   const { theme } = useTheme();
   const styles = useStyles();
   const safeCar = car ?? {};
+  const [showVinFull, setShowVinFull] = useState(false);
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: theme.bg }}>
       <ScrollView contentContainerStyle={{ paddingBottom: 120, paddingHorizontal: 16, paddingTop: 12 }}>
         <View style={[styles.pageHeaderRow, { paddingHorizontal: 0 }]}>
           <TouchableOpacity style={styles.headerIconBtn} onPress={onClose}>
-            <Ionicons name="chevron-back" size={20} color="white" />
+            <Feather name="chevron-left" size={20} color={theme.onAccent} />
           </TouchableOpacity>
           <View style={{ flex: 1, alignItems: 'center' }}>
             <Text style={styles.pageTitle}>Innstillinger</Text>
@@ -2634,79 +3226,144 @@ const ConfigScreen = ({
 
         <Text style={styles.settingsHeader}>KJØRETØY</Text>
     <View style={styles.settingsGroup}>
-      <View style={styles.settingsRow}>
-        <Text style={styles.settingsLabel}>Registreringsnummer</Text>
-        <Text style={styles.settingsValue}>{safeCar.plate}</Text>
-      </View>
+      {Platform.OS === 'ios' ? (
+        <View style={styles.settingsRow}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <Feather name="hash" size={16} color={theme.textDim} />
+            <Text style={styles.settingsLabel}>Registreringsnummer</Text>
+          </View>
+          <Text style={[styles.settingsValue, { fontFamily: Fonts.mono }]} selectable>{safeCar.plate}</Text>
+        </View>
+      ) : (
+        <TouchableOpacity style={styles.settingsRow} onPress={(e) => onShowCopyMenu?.(safeCar.plate || '', e)}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <Feather name="hash" size={16} color={theme.textDim} />
+            <Text style={styles.settingsLabel}>Registreringsnummer</Text>
+          </View>
+          <Text style={[styles.settingsValue, { fontFamily: Fonts.mono }]}>{safeCar.plate}</Text>
+        </TouchableOpacity>
+      )}
       <View style={styles.settingsDivider} />
       <TouchableOpacity style={styles.settingsRow} onPress={onEditNickname}>
-        <Text style={styles.settingsLabel}>Kallenavn</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <Feather name="user" size={16} color={theme.textDim} />
+          <Text style={styles.settingsLabel}>Kallenavn</Text>
+        </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <Text style={[styles.settingsValue, !safeCar.nickname && { color: theme.textDim }]}>
             {safeCar.nickname || 'Legg til kallenavn'}
           </Text>
-          <Ionicons name="create-outline" size={18} color={theme.textDim} />
+          <Feather name="edit-2" size={16} color={theme.textDim} />
         </View>
       </TouchableOpacity>
       <View style={styles.settingsDivider} />
-      <View style={styles.settingsRow}>
-        <Text style={styles.settingsLabel}>Understellsnummer</Text>
-        <Text style={styles.settingsValue}>{safeCar.vin}</Text>
-      </View>
+      <TouchableOpacity
+        style={[styles.settingsRow, showVinFull && { alignItems: 'flex-start' }]}
+        onPress={() => setShowVinFull((prev) => !prev)}
+      >
+        {!showVinFull ? (
+          <>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+              <Feather name="key" size={16} color={theme.textDim} />
+              <Text style={styles.settingsLabel}>Understellsnummer</Text>
+            </View>
+            <Text
+              style={[
+                styles.settingsValue,
+                { fontFamily: Fonts.mono, flexShrink: 1, textAlign: 'right', fontSize: 14, marginLeft: 12 },
+              ]}
+              numberOfLines={1}
+              ellipsizeMode="middle"
+            >
+              {safeCar.vin}
+            </Text>
+          </>
+        ) : (
+          <>
+            <Text
+              style={[styles.settingsValue, { fontFamily: Fonts.mono, flex: 1, width: '100%', textAlign: 'left', fontSize: 14 }]}
+            >
+              {safeCar.vin}
+            </Text>
+            <TouchableOpacity
+              onPress={() => copyToClipboard(safeCar.vin)}
+              style={{
+                position: 'absolute',
+                right: 12,
+                bottom: 8,
+                paddingHorizontal: 8,
+                paddingVertical: 4,
+                borderRadius: 6,
+                backgroundColor: theme.surface,
+                borderWidth: 1,
+                borderColor: theme.cardBorder,
+              }}
+            >
+              <Text style={{ color: theme.textDim, fontWeight: '700', fontSize: 12 }}>Kopier</Text>
+            </TouchableOpacity>
+          </>
+        )}
+      </TouchableOpacity>
       <View style={styles.settingsDivider} />
       <TouchableOpacity style={styles.settingsRow} onPress={onChangeCar}>
-        <Text style={styles.settingsLabel}>Bytt bil</Text>
-        <Ionicons name="chevron-forward" size={18} color={theme.textDim} />
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <Feather name="repeat" size={16} color={theme.textDim} />
+          <Text style={styles.settingsLabel}>Bytt bil</Text>
+        </View>
+        <Feather name="chevron-right" size={18} color={theme.textDim} />
       </TouchableOpacity>
     </View>
 
     <Text style={styles.settingsHeader}>Enheter</Text>
     <View style={styles.settingsGroup}>
-      <TouchableOpacity style={styles.settingsChoiceRow} onPress={() => onChangeUnits('km')}>
-        <Text style={styles.settingsChoiceLabel}>Kilometer</Text>
-        {units === 'km' && <Ionicons name="checkmark" size={18} color={theme.primary} />}
-      </TouchableOpacity>
-      <View style={styles.settingsDivider} />
-      <TouchableOpacity style={styles.settingsChoiceRow} onPress={() => onChangeUnits('mi')}>
-        <Text style={styles.settingsChoiceLabel}>Miles</Text>
-        {units === 'mi' && <Ionicons name="checkmark" size={18} color={theme.primary} />}
-      </TouchableOpacity>
+      <View style={styles.settingsChoiceRow}>
+        <Text style={styles.settingsChoiceLabel}>Metrisk / Imperial</Text>
+        <Switch
+          value={units === 'mi'}
+          onValueChange={(val) => onChangeUnits(val ? 'mi' : 'km')}
+          trackColor={{ false: theme.cardBorder, true: theme.primary }}
+          thumbColor={theme.text}
+        />
+      </View>
     </View>
 
     <Text style={styles.settingsHeader}>Tema</Text>
     <View style={styles.settingsGroup}>
-      <TouchableOpacity style={styles.settingsChoiceRow} onPress={() => onChangeAppTheme('system')}>
-        <Text style={styles.settingsChoiceLabel}>System</Text>
-        {appTheme === 'system' && <Ionicons name="checkmark" size={18} color={theme.primary} />}
-      </TouchableOpacity>
-      <View style={styles.settingsDivider} />
-      <TouchableOpacity style={styles.settingsChoiceRow} onPress={() => onChangeAppTheme('light')}>
-        <Text style={styles.settingsChoiceLabel}>Lys</Text>
-        {appTheme === 'light' && <Ionicons name="checkmark" size={18} color={theme.primary} />}
-      </TouchableOpacity>
-      <View style={styles.settingsDivider} />
-      <TouchableOpacity style={styles.settingsChoiceRow} onPress={() => onChangeAppTheme('dark')}>
-        <Text style={styles.settingsChoiceLabel}>Mørk</Text>
-        {appTheme === 'dark' && <Ionicons name="checkmark" size={18} color={theme.primary} />}
+      <TouchableOpacity style={styles.settingsRow} onPress={onOpenAppearance}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <Feather name="sliders" size={16} color={theme.textDim} />
+          <Text style={styles.settingsLabel}>Apputseende</Text>
+        </View>
+        <Feather name="chevron-right" size={18} color={theme.textDim} />
       </TouchableOpacity>
     </View>
 
     <Text style={styles.settingsHeader}>Konto</Text>
     <View style={styles.settingsGroup}>
       <View style={styles.settingsRow}>
-        <Text style={styles.settingsLabel}>Brukernavn</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <Feather name="user" size={16} color={theme.textDim} />
+          <Text style={styles.settingsLabel}>Brukernavn</Text>
+        </View>
         <Text style={styles.settingsValue}>{username || '—'}</Text>
       </View>
       <View style={styles.settingsDivider} />
       <TouchableOpacity style={styles.settingsRow} onPress={onSignOut}>
-        <Text style={styles.settingsLabel}>Logg ut</Text>
-        <Ionicons name="log-out-outline" size={18} color={theme.textDim} />
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <Feather name="log-out" size={16} color={theme.textDim} />
+          <Text style={styles.settingsLabel}>Logg ut</Text>
+        </View>
       </TouchableOpacity>
     </View>
 
-    <View style={styles.settingsGroup}>
-      <TouchableOpacity style={styles.settingsRow} onPress={onDelete}>
-        <Text style={styles.settingsDestructive}>Slett kjøretøy</Text>
+    <View style={{ marginTop: 12 }}>
+      <TouchableOpacity style={styles.secondaryBtn} onPress={onChangeCar}>
+        <Text style={styles.secondaryBtnText}>BYTT BIL</Text>
+      </TouchableOpacity>
+    </View>
+    <View style={{ marginTop: 12 }}>
+      <TouchableOpacity style={styles.scrapBtn} onPress={onDelete}>
+        <Text style={styles.scrapBtnText}>VRAK BILEN</Text>
       </TouchableOpacity>
     </View>
       </ScrollView>
@@ -2739,14 +3396,14 @@ const LogMediaViewer = ({
       <View style={styles.fullscreenOverlay}>
         <View style={[styles.fullscreenHeader, { top: insets.top + 10 }]}>
           <TouchableOpacity onPress={onClose}>
-            <Ionicons name="close" size={22} color="white" />
+            <Feather name="x" size={22} color="white" />
           </TouchableOpacity>
           <Text style={{ color: 'white', fontWeight: '600' }}>
             {index + 1} / {media.length}
           </Text>
           {onDelete ? (
             <TouchableOpacity onPress={() => onDelete(media[index]?.id)}>
-              <Ionicons name="trash" size={20} color="white" />
+              <Feather name="trash-2" size={20} color="white" />
             </TouchableOpacity>
           ) : (
             <View style={{ width: 22 }} />
@@ -2794,7 +3451,7 @@ const LogMediaGrid = ({
       <View style={[styles.fullscreenOverlay, { paddingTop: insets.top + 20 }]}>
         <View style={[styles.fullscreenHeader, { top: insets.top + 10 }]}>
           <TouchableOpacity onPress={onClose}>
-            <Ionicons name="close" size={22} color="white" />
+            <Feather name="x" size={22} color="white" />
           </TouchableOpacity>
           <Text style={{ color: 'white', fontWeight: '600' }}>Bilder</Text>
           <View style={{ width: 22 }} />
@@ -2829,13 +3486,13 @@ const ProjectFormModal = ({
   const { theme } = useTheme();
   const styles = useStyles();
   const [title, setTitle] = useState(project?.title || '');
-  const [category, setCategory] = useState(project?.category || '');
-  const [budget, setBudget] = useState(project?.budgetPlanned ? String(project.budgetPlanned) : '');
+  const [description, setDescription] = useState(project?.description || '');
+  const [budget, setBudget] = useState(project?.budgetPlanned ? formatNumberWithSpaces(String(project.budgetPlanned)) : '');
 
   useEffect(() => {
     setTitle(project?.title || '');
-    setCategory(project?.category || '');
-    setBudget(project?.budgetPlanned ? String(project.budgetPlanned) : '');
+    setDescription(project?.description || '');
+    setBudget(project?.budgetPlanned ? formatNumberWithSpaces(String(project.budgetPlanned)) : '');
   }, [project]);
 
   if (!visible) return null;
@@ -2851,8 +3508,8 @@ const ProjectFormModal = ({
           onPress={() =>
             onSave({
               title,
-              category,
-              budgetPlanned: budget ? Number(budget) : null
+              description,
+              budgetPlanned: budget ? parseNumberWithSpaces(budget) : null
             })
           }>
           <Text style={styles.modalSaveText}>Lagre</Text>
@@ -2861,40 +3518,51 @@ const ProjectFormModal = ({
       <ScrollView style={{ backgroundColor: theme.bg }} contentContainerStyle={styles.logForm}>
         <View style={styles.formSection}>
           <Text style={styles.sectionHeader}>Detaljer</Text>
+          <Text style={{ color: theme.textDim, fontSize: 12, marginTop: -2, marginBottom: 8 }}>
+            Dette kan endres senere.
+          </Text>
           <View style={styles.listGroup}>
-            <View style={styles.listRow}>
+            <View style={[styles.listRow, { flexDirection: 'column', alignItems: 'stretch', gap: 8 }]}>
               <Text style={styles.listLabel}>Tittel</Text>
+              <View style={{ width: '100%', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <TextInput
+                  style={[styles.listInput, { fontSize: 18, textAlign: 'left', flex: 1 }]}
+                  placeholder="Motoroverhaling"
+                  placeholderTextColor={theme.textDim}
+                  value={title}
+                  onChangeText={setTitle}
+                  maxLength={30}
+                />
+                <Text style={{ color: theme.textDim, fontSize: 12, minWidth: 36, textAlign: 'right' }}>
+                  {title.length}/30
+                </Text>
+              </View>
+            </View>
+            <View style={styles.listDivider} />
+            <View style={[styles.listRow, { flexDirection: 'column', alignItems: 'stretch', gap: 8 }]}>
+              <Text style={styles.listLabel}>Beskrivelse</Text>
               <TextInput
-                style={styles.listInput}
-                placeholder="Motoroverhaling"
+                style={[styles.listInput, { fontSize: 18, textAlign: 'left' }]}
+                placeholder="Valgfritt"
                 placeholderTextColor={theme.textDim}
-                value={title}
-                onChangeText={setTitle}
+                value={description}
+                onChangeText={setDescription}
               />
             </View>
             <View style={styles.listDivider} />
-            <View style={styles.listRow}>
-              <Text style={styles.listLabel}>Kategori</Text>
-              <TextInput
-                style={styles.listInput}
-                placeholder="Motor"
-                placeholderTextColor={theme.textDim}
-                value={category}
-                onChangeText={setCategory}
-              />
-            </View>
-            <View style={styles.listDivider} />
-            <View style={styles.listRow}>
+            <View style={[styles.listRow, { flexDirection: 'column', alignItems: 'stretch', gap: 8 }]}>
               <Text style={styles.listLabel}>Planlagt</Text>
-              <TextInput
-                style={styles.listInput}
-                placeholder="0"
-                placeholderTextColor={theme.textDim}
-                keyboardType="numeric"
-                value={budget}
-                onChangeText={setBudget}
-              />
-              <Text style={[styles.listLabel, { width: 30, textAlign: 'right' }]}>kr</Text>
+              <View style={{ width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 6 }}>
+                <TextInput
+                  style={[styles.listInput, { flex: 1, textAlign: 'left' }]}
+                  placeholder="0"
+                  placeholderTextColor={theme.textDim}
+                  keyboardType="numeric"
+                  value={budget}
+                  onChangeText={(val) => setBudget(formatNumberWithSpaces(val))}
+                />
+                <Text style={[styles.listLabel, { width: 24, textAlign: 'right' }]}>kr</Text>
+              </View>
             </View>
           </View>
         </View>
@@ -2919,7 +3587,7 @@ const ProjectMediaGrid = ({
       <View style={[styles.fullscreenOverlay, { paddingTop: insets.top + 20 }]}>
         <View style={[styles.fullscreenHeader, { top: insets.top + 10 }]}>
           <TouchableOpacity onPress={onClose}>
-            <Ionicons name="close" size={22} color="white" />
+            <Feather name="x" size={22} color="white" />
           </TouchableOpacity>
           <Text style={{ color: 'white', fontWeight: '600' }}>Prosjektbilder</Text>
           <View style={{ width: 22 }} />
@@ -2937,46 +3605,6 @@ const ProjectMediaGrid = ({
         </ScrollView>
       </View>
     </Modal>
-  );
-};
-
-const SpecBox = ({ label, value, icon }: any) => {
-  const { theme } = useTheme();
-  const styles = useStyles();
-  return (
-    <View style={styles.specBox}>
-      <Ionicons name={icon} size={18} color={theme.primary} style={{marginBottom: 8}} />
-      <Text style={styles.specLabel}>{label}</Text>
-      <Text style={[styles.specValue, !value && {color: theme.danger}]}>
-        {value || 'Ukjent'}
-      </Text>
-    </View>
-  );
-};
-
-const AlertCard = ({ color, icon, title, value, sub }: any) => {
-  const styles = useStyles();
-  return (
-    <View style={[styles.alertCard, { borderTopColor: color }]}>
-      <Ionicons name={icon} size={24} color={color} style={{marginBottom: 8}} />
-      <Text style={styles.alertTitle}>{title}</Text>
-      <Text style={[styles.alertValue, { color }]}>{value}</Text>
-      <Text style={styles.alertSub}>{sub}</Text>
-    </View>
-  );
-};
-
-const InfoTile = ({ label, value, sub, tone, icon, onPress }: any) => {
-  const styles = useStyles();
-  return (
-    <TouchableOpacity style={styles.infoTile} onPress={onPress} activeOpacity={onPress ? 0.7 : 1}>
-      <View style={styles.infoTileHeader}>
-        <Ionicons name={icon} size={18} color={tone} />
-        <Text style={styles.infoTileLabel}>{label}</Text>
-      </View>
-      <Text style={styles.infoTileValue}>{value}</Text>
-      <Text style={styles.infoTileSub}>{sub}</Text>
-    </TouchableOpacity>
   );
 };
 
@@ -3019,65 +3647,72 @@ const LogRow = ({
       { text: 'Avbryt', style: 'cancel' }
     ]);
   };
+  const formatDistance = (km: number) =>
+    units === 'mi' ? `${Math.round(km * 0.621371)} mi` : `${km} km`;
+  const date = new Date(log.date);
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = date.toLocaleString('nb-NO', { month: 'short' }).toUpperCase();
+  const iconName = getTypeIconName(log.type);
 
   return (
     <Pressable onLongPress={openActions} onPress={() => (photoCount ? onOpenPhotos?.() : undefined)}>
-      <View style={styles.logRow}>
-        <View style={styles.logTimelineLine} />
-        <View style={[styles.logIconParams, { borderColor: log.isSystemEvent ? theme.textDim : theme.primary }]}>
-          <Ionicons 
-            name={log.isSystemEvent ? "settings" : getTypeIconName(log.type)} 
-            size={14} 
-            color={log.isSystemEvent ? theme.textDim : theme.primary} 
-          />
-        </View>
-        <View style={styles.logContent}>
-          <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
-            <Text style={styles.logTitle}>{log.title}</Text>
-            <Text style={styles.logDate}>{log.date}</Text>
+      <View style={{ position: 'relative' }}>
+        <View style={styles.timelineLine} />
+        <View style={styles.timelineRow}>
+          <View style={styles.timelineDate}>
+            <Text style={styles.timelineDay}>{day}</Text>
+            <Text style={styles.timelineMonth}>{month}</Text>
           </View>
-          {!!log.notes && <Text style={styles.logNotes}>{log.notes}</Text>}
-          <View style={{flexDirection: 'row', justifyContent: 'space-between', marginTop: 4}}>
-            <Text style={styles.logMeta}>{log.mileage > 0 ? formatDistance(log.mileage, units) : ''}</Text>
-            {log.cost > 0 && <Text style={styles.logCost}>{log.cost} kr</Text>}
+          <View style={styles.timelineCard}>
+            <View style={styles.timelineHeader}>
+              <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Feather name={iconName} size={16} color={theme.text} />
+                <Text style={styles.timelineTitle}>{log.title}</Text>
+              </View>
+              <Text style={styles.timelineMeta}>{log.mileage > 0 ? formatDistance(log.mileage, units) : ''}</Text>
+            </View>
+            {!!log.notes && <Text style={styles.logNotes}>{log.notes}</Text>}
+            <View style={styles.timelineMetaRow}>
+              <Text style={styles.timelineMeta}>{projectName || '—'}</Text>
+              {log.cost > 0 && <Text style={styles.timelineMeta}>{log.cost} kr</Text>}
+            </View>
+            {!!photoCount && (
+              <View style={[styles.projectPill, { borderColor: theme.cardBorder, backgroundColor: theme.surface, marginTop: 8 }]}>
+                <Feather name="image" size={12} color={theme.textDim} />
+                <Text style={[styles.logMeta, { color: theme.textDim }]}>{photoCount} bilde{photoCount > 1 ? 'r' : ''}</Text>
+              </View>
+            )}
           </View>
-          {!!projectName && (
-            <View style={styles.projectPill}>
-              <Ionicons name="albums" size={12} color={theme.primary} />
-              <Text style={[styles.logMeta, { color: theme.primary }]}>{projectName}</Text>
-            </View>
-          )}
-          {!!photoCount && (
-            <View style={[styles.projectPill, { borderColor: theme.primary, backgroundColor: theme.surface, marginTop: 6 }]}>
-              <Ionicons name="image" size={12} color={theme.primary} />
-              <Text style={[styles.logMeta, { color: theme.primary }]}>{photoCount} bilde{photoCount > 1 ? 'r' : ''}</Text>
-            </View>
-          )}
         </View>
       </View>
     </Pressable>
   );
 };
 
-const TabBtn = ({ icon, label, active, onPress }: any) => {
+const TabBtn = ({ iconName, label, active, onPress }: any) => {
   const { theme } = useTheme();
   const styles = useStyles();
   return (
     <TouchableOpacity style={styles.tabBtn} onPress={onPress} accessibilityLabel={label}>
-      <Ionicons name={active ? icon : `${icon}-outline`} size={22} color={active ? theme.primary : theme.textDim} />
+      <Feather name={iconName} size={22} color={active ? theme.primary : theme.textDim} />
       <Text style={[styles.tabLabel, { color: active ? theme.primary : theme.textDim }]}>{label}</Text>
     </TouchableOpacity>
   );
 };
 
-const getTypeIconName = (type: string) => {
+const getTypeIconName = (type: string): any => {
   const key = String(type || '').toLowerCase();
-  if (key === 'service') return 'build';
-  if (key === 'repair') return 'construct';
-  if (key === 'inspection') return 'search';
-  if (key === 'upgrade') return 'rocket';
-  if (key === 'fuel') return 'water';
-  return 'pricetag';
+  const map: Record<string, any> = {
+    service: 'tool',
+    repair: 'tool',
+    inspection: 'eye',
+    parts: 'zap',
+    upgrade: 'zap',
+    tires: 'disc',
+    fuel: 'droplet',
+    other: 'file-text',
+  };
+  return map[key] || 'file-text';
 };
 
 // --- MODALS ---
@@ -3088,6 +3723,7 @@ const AddLogModal = ({
   mileagePlaceholder,
   logTypes,
   logType,
+  onSetLogType,
   onManageTypes,
   units,
   initialLog,
@@ -3096,7 +3732,8 @@ const AddLogModal = ({
   onSelectProject,
   onRequestNewProject,
   initialMediaUris,
-  formSeed
+  formSeed,
+  currentMileage
 }: any) => {
   const { theme } = useTheme();
   const styles = useStyles();
@@ -3117,7 +3754,7 @@ const AddLogModal = ({
   const formatLogDate = (date: Date) =>
     date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
   const typeLabel = (value: LogType) => formatLogTypeLabel(value);
-  const availableTypes: LogType[] = logTypes?.length ? logTypes : ['service'];
+  const typeOptions: LogType[] = ['service', 'repair', 'inspection', 'parts', 'tires', 'other'];
 
   useEffect(() => {
     const seedChanged = formSeed !== prevSeedRef.current;
@@ -3137,14 +3774,14 @@ const AddLogModal = ({
       return;
     }
     setTitle(initialLog.title || '');
-    setCost(initialLog.cost ? String(initialLog.cost) : '');
+    setCost(initialLog.cost ? formatNumberWithSpaces(String(initialLog.cost)) : '');
     const displayMileage =
       typeof initialLog.mileage === 'number'
         ? units === 'mi'
           ? Math.round(initialLog.mileage * 0.621371)
           : initialLog.mileage
         : '';
-    setMileage(displayMileage ? String(displayMileage) : '');
+    setMileage(displayMileage ? formatNumberWithSpaces(String(displayMileage)) : '');
     setNotes(initialLog.notes || '');
     setLogDate(initialLog.date ? new Date(initialLog.date) : new Date());
     setProjectId(initialLog.projectId || null);
@@ -3197,8 +3834,8 @@ const AddLogModal = ({
                 {
                   id: initialLog?.id || Date.now().toString(),
                   title: title || typeLabel(logType),
-                  cost: parseInt(cost) || 0,
-                  mileage: toKilometers(parseInt(mileage) || 0, units),
+                  cost: parseNumberWithSpaces(cost),
+                  mileage: toKilometers(parseNumberWithSpaces(mileage), units),
                   date: logDate.toISOString().split('T')[0],
                   type: logType,
                   notes,
@@ -3228,16 +3865,22 @@ const AddLogModal = ({
           <View style={styles.listGroup}>
             <View style={styles.listRow}>
               <Text style={styles.listLabel}>Tittel</Text>
-              <TextInput
-                ref={titleRef}
-                style={styles.listInput}
-                placeholderTextColor={theme.textDim}
-                placeholder="Oljeskift"
-                value={title}
-                onChangeText={setTitle}
-                returnKeyType="next"
-                onSubmitEditing={() => costRef.current?.focus()}
-              />
+              <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
+                <TextInput
+                  ref={titleRef}
+                  style={styles.listInput}
+                  placeholderTextColor={theme.textDim}
+                  placeholder="Oljeskift"
+                  value={title}
+                  onChangeText={setTitle}
+                  maxLength={40}
+                  returnKeyType="next"
+                  onSubmitEditing={() => costRef.current?.focus()}
+                />
+                <Text style={{ color: theme.textDim, fontSize: 12, minWidth: 36, textAlign: 'right' }}>
+                  {title.length}/40
+                </Text>
+              </View>
             </View>
             <View style={styles.listDivider} />
             <TouchableOpacity
@@ -3266,15 +3909,6 @@ const AddLogModal = ({
                 />
               </View>
             )}
-            <View style={styles.listDivider} />
-            <TouchableOpacity style={styles.listRow} onPress={onManageTypes}>
-              <Text style={styles.listLabel}>Type</Text>
-              <View style={styles.listValueRow}>
-                <Text style={styles.listValue}>
-                  {formatLogTypeLabel(logType || availableTypes[0])}
-                </Text>
-              </View>
-            </TouchableOpacity>
             <View style={styles.listDivider} />
             <View style={styles.listRow}>
               <Text style={styles.listLabel}>Prosjekt</Text>
@@ -3318,14 +3952,42 @@ const AddLogModal = ({
         </View>
 
         <View style={styles.formSection}>
+          <Text style={styles.sectionHeader}>Type</Text>
+          <View style={styles.typeGrid}>
+            {typeOptions.map((type) => {
+              const iconName = getTypeIconName(type);
+              const isActive = logType === type;
+              return (
+                <TouchableOpacity
+                  key={type}
+                  style={[styles.typeButton, isActive && styles.typeButtonActive]}
+                  onPress={() => onSetLogType?.(type)}
+                >
+                  <Feather name={iconName} size={20} color={isActive ? theme.onAccent : theme.textDim} />
+                  <Text style={[styles.typeButtonText, isActive && styles.typeButtonTextActive]}>
+                    {typeLabel(type)}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+
+        <View style={styles.formSection}>
           <Text style={styles.sectionHeader}>Bilder</Text>
           <View style={[styles.listGroup, { padding: 12, gap: 10 }]}>
             <View style={{ flexDirection: 'row', gap: 10 }}>
-              <TouchableOpacity style={[styles.secondaryBtn, { flex: 1, borderColor: theme.cardBorder }]} onPress={() => pickPhotos('library')}>
-                <Text style={{ color: theme.text, textAlign: 'center' }}>Legg til fra bibliotek</Text>
-              </TouchableOpacity>
               <TouchableOpacity style={[styles.secondaryBtn, { flex: 1, borderColor: theme.cardBorder }]} onPress={() => pickPhotos('camera')}>
-                <Text style={{ color: theme.text, textAlign: 'center' }}>Bruk kamera</Text>
+                <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center' }}>
+                  <Feather name="camera" size={18} color={theme.text} />
+                  <Text style={{ color: theme.text, textAlign: 'center', fontWeight: '700' }}>KAMERA</Text>
+                </View>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.secondaryBtn, { flex: 1, borderColor: theme.cardBorder }]} onPress={() => pickPhotos('library')}>
+                <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center' }}>
+                  <Feather name="image" size={18} color={theme.text} />
+                  <Text style={{ color: theme.text, textAlign: 'center', fontWeight: '700' }}>GALLERI</Text>
+                </View>
               </TouchableOpacity>
             </View>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
@@ -3348,32 +4010,93 @@ const AddLogModal = ({
           <View style={styles.listGroup}>
             <View style={styles.listRow}>
               <Text style={styles.listLabel}>Kostnad</Text>
-              <TextInput
-                ref={costRef}
-                style={styles.listInput}
-                placeholderTextColor={theme.textDim}
-                placeholder="0"
-                keyboardType="numeric"
-                value={cost}
-                onChangeText={setCost}
-                returnKeyType="next"
-                onSubmitEditing={() => mileageRef.current?.focus()}
-              />
+              <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
+                <TextInput
+                  ref={costRef}
+                  style={[styles.listInput, { fontFamily: Fonts.mono }]}
+                  placeholderTextColor={theme.textDim}
+                  placeholder="0"
+                  keyboardType="numeric"
+                  value={cost}
+                  onChangeText={(val) => setCost(formatNumberWithSpaces(val))}
+                  returnKeyType="next"
+                  onSubmitEditing={() => mileageRef.current?.focus()}
+                />
+                <Text style={[styles.listLabel, { minWidth: 22, textAlign: 'right' }]}>kr</Text>
+              </View>
+            </View>
+            <View style={styles.quickAddRow}>
+              {[10, 100, 1000].map((val) => (
+                <TouchableOpacity
+                  key={`pos-cost-${val}`}
+                  style={[styles.quickAddBtn, styles.quickAddBtnPositive]}
+                  onPress={() => {
+                    const base = cost ? parseNumberWithSpaces(cost) : 0;
+                    const next = Math.max(0, base + val);
+                    setCost(formatNumberWithSpaces(String(next)));
+                  }}
+                >
+                  <Text style={[styles.quickAddText, styles.quickAddTextPositive]}>+{val}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <View style={styles.quickAddRow}>
+              {[-10, -100, -1000].map((val) => (
+                <TouchableOpacity
+                  key={`neg-cost-${val}`}
+                  style={[styles.quickAddBtn, styles.quickAddBtnNegative]}
+                  onPress={() => {
+                    const base = cost ? parseNumberWithSpaces(cost) : 0;
+                    const next = Math.max(0, base + val);
+                    setCost(formatNumberWithSpaces(String(next)));
+                  }}
+                >
+                  <Text style={[styles.quickAddText, styles.quickAddTextNegative]}>{val}</Text>
+                </TouchableOpacity>
+              ))}
             </View>
             <View style={styles.listDivider} />
             <View style={styles.listRow}>
               <Text style={styles.listLabel}>Kilometerstand</Text>
               <TextInput
                 ref={mileageRef}
-                style={styles.listInput}
+                style={[styles.listInput, { fontFamily: Fonts.mono }]}
                 placeholderTextColor={theme.textDim}
                 placeholder={mileagePlaceholder}
                 keyboardType="numeric"
                 value={mileage}
-                onChangeText={setMileage}
+                onChangeText={(val) => setMileage(formatNumberWithSpaces(val))}
                 returnKeyType="next"
                 onSubmitEditing={() => notesRef.current?.focus()}
               />
+            </View>
+            <View style={styles.quickAddRow}>
+              {[1000, 5000, 10000].map((val) => (
+                <TouchableOpacity
+                  key={`pos-mile-${val}`}
+                  style={[styles.quickAddBtn, styles.quickAddBtnPositive]}
+                  onPress={() => {
+                    const base = mileage ? parseNumberWithSpaces(mileage) : currentMileage || 0;
+                    setMileage(formatNumberWithSpaces(String(base + val)));
+                  }}
+                >
+                  <Text style={[styles.quickAddText, styles.quickAddTextPositive]}>+{val / 1000}k</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <View style={styles.quickAddRow}>
+              {[-1000, -5000, -10000].map((val) => (
+                <TouchableOpacity
+                  key={`neg-mile-${val}`}
+                  style={[styles.quickAddBtn, styles.quickAddBtnNegative]}
+                  onPress={() => {
+                    const base = mileage ? parseNumberWithSpaces(mileage) : currentMileage || 0;
+                    setMileage(formatNumberWithSpaces(String(base + val)));
+                  }}
+                >
+                  <Text style={[styles.quickAddText, styles.quickAddTextNegative]}>{val / 1000}k</Text>
+                </TouchableOpacity>
+              ))}
             </View>
           </View>
         </View>
@@ -3389,10 +4112,15 @@ const AddLogModal = ({
               value={notes}
               onChangeText={setNotes}
               multiline
+              maxLength={200}
+              autoCorrect
               returnKeyType="done"
               blurOnSubmit
               onSubmitEditing={() => Keyboard.dismiss()}
             />
+            <View style={{ alignItems: 'flex-end', paddingHorizontal: 12, paddingBottom: 8 }}>
+              <Text style={{ color: theme.textDim, fontSize: 12 }}>{notes.length}/200</Text>
+            </View>
           </View>
         </View>
       </KeyboardAwareScrollView>
@@ -3405,6 +4133,13 @@ const SimpleInputModal = ({ visible, title, placeholder, keyboard, onClose, onSa
   const styles = useStyles();
   const [val, setVal] = useState('');
   useEffect(() => setVal(''), [visible]);
+  const handleChange = (next: string) => {
+    if (keyboard === 'numeric') {
+      setVal(formatNumberWithSpaces(next));
+      return;
+    }
+    setVal(next);
+  };
   return (
     <Modal visible={visible} transparent animationType="fade">
       <View style={styles.modalOverlay}>
@@ -3415,14 +4150,14 @@ const SimpleInputModal = ({ visible, title, placeholder, keyboard, onClose, onSa
             placeholder={placeholder} 
             placeholderTextColor={theme.textDim}
             value={val} 
-            onChangeText={setVal} 
+            onChangeText={handleChange} 
             keyboardType={keyboard}
             autoFocus
           />
           {units && <Text style={styles.popupHelp}>Enhet: {units.toUpperCase()}</Text>}
           <View style={{flexDirection: 'row', gap: 10, marginTop: 20}}>
             <TouchableOpacity onPress={onClose} style={[styles.popupBtn, {backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.cardBorder}]}><Text style={{color: theme.text}}>Avbryt</Text></TouchableOpacity>
-            <TouchableOpacity onPress={() => onSave(val)} style={[styles.popupBtn, {backgroundColor: theme.primary}]}><Text style={{fontWeight: '600', color: 'white'}}>Lagre</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => onSave(val)} style={[styles.popupBtn, {backgroundColor: theme.primary}]}><Text style={{fontWeight: '600', color: theme.onAccent}}>Lagre</Text></TouchableOpacity>
           </View>
         </View>
       </View>
@@ -3462,7 +4197,7 @@ const TypesPage = ({ types, selectedType, onSelectType, onAddType, onRemoveType,
         </TouchableOpacity>
         <Text style={styles.modalH1}>Administrer typer</Text>
         <TouchableOpacity style={styles.headerIconBtn} onPress={promptAddType}>
-          <Ionicons name="add" size={20} color="white" />
+          <Feather name="plus" size={20} color={theme.onAccent} />
         </TouchableOpacity>
       </View>
       <ScrollView style={{ backgroundColor: theme.bg }} contentContainerStyle={styles.logForm}>
@@ -3474,17 +4209,20 @@ const TypesPage = ({ types, selectedType, onSelectType, onAddType, onRemoveType,
                 <Swipeable
                   renderRightActions={() => (
                     <TouchableOpacity style={styles.swipeDelete} onPress={() => onRemoveType(type)}>
-                      <Ionicons name="trash" size={18} color="white" />
+                      <Feather name="trash-2" size={18} color="white" />
                     </TouchableOpacity>
                   )}>
                   <View style={styles.listRow}>
                     <TouchableOpacity style={styles.typeSelectBtn} onPress={() => onSelectType(type)}>
                       <View style={styles.typeNameRow}>
-                        <Ionicons name={getTypeIconName(type)} size={16} color={theme.textDim} />
+                        {(() => {
+                          const iconName = getTypeIconName(type);
+                          return <Feather name={iconName} size={16} color={theme.textDim} />;
+                        })()}
                         <Text style={styles.typeName}>{formatLogTypeLabel(type)}</Text>
                       </View>
                       {selectedType === type && (
-                        <Ionicons name="checkmark" size={18} color={theme.primary} />
+                        <Feather name="check" size={18} color={theme.primary} />
                       )}
                     </TouchableOpacity>
                   </View>
@@ -3502,9 +4240,10 @@ const TypesPage = ({ types, selectedType, onSelectType, onAddType, onRemoveType,
 const Onboarding = ({ onRegister, cars, userEmail, onSelectCar }: any) => {
   const { theme, statusBarStyle } = useTheme();
   const styles = useStyles();
+  const emailLabel = userEmail ? `Innlogget som ${userEmail}` : null;
   const [plate, setPlate] = useState('');
   const [load, setLoad] = useState(false);
-  const emailLabel = userEmail ? `Innlogget som ${userEmail}` : null;
+  const [showAddCar, setShowAddCar] = useState(false);
   return (
     <KeyboardAvoidingView
       style={styles.container}
@@ -3515,10 +4254,10 @@ const Onboarding = ({ onRegister, cars, userEmail, onSelectCar }: any) => {
         <StatusBar style={statusBarStyle} />
         <View style={styles.onboardingCard}>
           <View style={styles.onboardingIcon}>
-            <Ionicons name="car-sport" size={40} color={theme.primary} />
+            <Feather name="truck" size={32} color={theme.primary} />
           </View>
-          <Text style={styles.onboardingTitle}>Hanskerommet</Text>
-          <Text style={styles.onboardingSub}>Loggfør servicehistorikk på sekunder.</Text>
+          <Text style={styles.onboardingTitle}>MIN GARASJE</Text>
+          <Text style={styles.onboardingSub}>Presisjonsverktøy for servicehistorikk.</Text>
           {!!emailLabel && <Text style={styles.onboardingSub}>{emailLabel}</Text>}
           {!!cars?.length && (
             <View style={styles.onboardingList}>
@@ -3530,16 +4269,18 @@ const Onboarding = ({ onRegister, cars, userEmail, onSelectCar }: any) => {
                       <TouchableOpacity style={styles.onboardingRow} onPress={() => onSelectCar(item)}>
                         <View style={styles.onboardingLogo}>
                           {BrandLogo ? (
-                            <BrandLogo width="100%" height="100%" preserveAspectRatio="xMidYMid meet" />
+                            <View style={{ width: '100%', height: '100%', opacity: 0.6 }}>
+                              <BrandLogo width="100%" height="100%" preserveAspectRatio="xMidYMid meet" />
+                            </View>
                           ) : (
-                            <Text style={styles.onboardingLogoText}>LOGO</Text>
+                            <Feather name="truck" size={18} color={theme.textDim} />
                           )}
                         </View>
                         <View style={{ flex: 1 }}>
                           <Text style={styles.onboardingRowTitle}>{item.nickname || `${item.make} ${item.model}`}</Text>
                           <Text style={styles.onboardingRowSub}>{String(item.plate || '').replace(/\s+/g, '')}</Text>
                         </View>
-                        <Ionicons name="chevron-forward" size={18} color={theme.textDim} />
+                        <Feather name="chevron-right" size={18} color={theme.textDim} />
                       </TouchableOpacity>
                       {index < cars.length - 1 && <View style={styles.onboardingDivider} />}
                     </View>
@@ -3548,19 +4289,46 @@ const Onboarding = ({ onRegister, cars, userEmail, onSelectCar }: any) => {
               </View>
             </View>
           )}
-          <TextInput 
-            style={[styles.input, styles.onboardingInput]} 
-            placeholder="REGISTRERINGSNUMMER" 
-            placeholderTextColor={theme.textDim}
-            value={plate}
-            onChangeText={setPlate}
-            autoCapitalize="characters"
-          />
-          <TouchableOpacity 
-            style={[styles.mainBtn, styles.onboardingBtn]} 
-            onPress={() => { setLoad(true); onRegister(plate).finally(() => setLoad(false)); }}
+          <View style={styles.onboardingDividerLine} />
+          {showAddCar && (
+            <View style={{ width: '100%' }}>
+              <View style={styles.plateWrap}>
+                <View style={styles.plateStrip}>
+                  <Text style={styles.plateStripText}>N</Text>
+                </View>
+                <TextInput
+                  style={styles.plateInput}
+                  placeholder="REG.NR"
+                  placeholderTextColor="#6B7280"
+                  value={plate}
+                  onChangeText={(val) => {
+                    const cleaned = val.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                    setPlate(/[A-Z]/.test(cleaned) ? cleaned : formatNumberWithSpaces(cleaned));
+                  }}
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                />
+              </View>
+              <TouchableOpacity 
+                style={[
+                  styles.mainBtn,
+                  styles.onboardingBtn,
+                  { marginTop: 12, width: '100%', height: 56, paddingHorizontal: 0, paddingVertical: 0, justifyContent: 'center' }
+                ]} 
+                onPress={() => { setLoad(true); onRegister(plate).finally(() => setLoad(false)); }}
+              >
+                {load ? <ActivityIndicator color="white" /> : <Text style={styles.btnTxt}>START</Text>}
+              </TouchableOpacity>
+            </View>
+          )}
+          <TouchableOpacity
+            style={styles.addCarLink}
+            onPress={() => {
+              LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+              setShowAddCar((prev) => !prev);
+            }}
           >
-            {load ? <ActivityIndicator color="white" /> : <Text style={styles.btnTxt}>Start</Text>}
+            <Text style={styles.addCarLinkText}>{showAddCar ? 'FERDIG' : 'LEGG TIL BIL'}</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>

@@ -3,6 +3,7 @@ import {
   Animated,
   ImageBackground,
   Modal,
+  PanResponder,
   Platform,
   Pressable,
   ScrollView,
@@ -11,7 +12,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Feather } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
 import { useStyles, useTheme } from './theme';
@@ -56,6 +57,19 @@ export const ProjectDetailModal = ({
   });
   const nextGoal = sortedGoals.find((g: any) => g.status !== 'done') || null;
   const actionsY = React.useRef(new Animated.Value(300)).current;
+  const panResponder = React.useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_, gesture) =>
+          Math.abs(gesture.dx) > Math.abs(gesture.dy) && Math.abs(gesture.dx) > 12,
+        onPanResponderRelease: (_, gesture) => {
+          if (gesture.dx > 80) {
+            onClose?.();
+          }
+        },
+      }),
+    [onClose]
+  );
   const openActionsSheet = () => {
     setShowActions(true);
     actionsY.setValue(300);
@@ -73,14 +87,14 @@ export const ProjectDetailModal = ({
   const nextActionLabel = project.status !== 'done' ? 'Merk som fullført' : 'Gjenåpne prosjekt';
 
   return (
-    <View style={[styles.modalBase, { backgroundColor: theme.bg }]}>
+    <View style={[styles.modalBase, { backgroundColor: theme.bg }]} {...panResponder.panHandlers}>
       <View style={styles.modalHeader}>
-        <TouchableOpacity onPress={onClose}>
-          <Ionicons name="chevron-back" size={20} color="white" />
+        <TouchableOpacity style={styles.headerIconBtn} onPress={onClose} accessibilityLabel="Lukk prosjekt">
+          <Feather name="chevron-left" size={20} color="#0F172A" />
         </TouchableOpacity>
         <Text style={styles.modalH1}>{project.title}</Text>
-        <TouchableOpacity onPress={openProjectActions}>
-          <Ionicons name="ellipsis-horizontal" size={22} color="white" />
+        <TouchableOpacity onPress={openProjectActions} accessibilityLabel="Prosjektmeny">
+          <Feather name="more-horizontal" size={22} color={theme.primary} />
         </TouchableOpacity>
       </View>
       <ScrollView style={{ backgroundColor: theme.bg }} contentContainerStyle={styles.logForm}>
@@ -106,12 +120,12 @@ export const ProjectDetailModal = ({
 
           {nextGoal ? (
             <TouchableOpacity style={styles.nextGoalPill} onPress={() => onEditGoal(nextGoal)}>
-              <Ionicons name="flag" size={16} color={theme.primary} />
+              <Feather name="flag" size={16} color={theme.textDim} />
               <Text style={styles.nextGoalText}>Neste mål: {nextGoal.title}</Text>
             </TouchableOpacity>
           ) : (
             <View style={styles.nextGoalPill}>
-              <Ionicons name="flag-outline" size={16} color={theme.textDim} />
+              <Feather name="flag" size={16} color={theme.textDim} />
               <Text style={styles.nextGoalText}>Legg til mål for å holde oversikt</Text>
             </View>
           )}
@@ -124,9 +138,9 @@ export const ProjectDetailModal = ({
               <Text style={{ color: theme.text, fontWeight: '600' }}>Legg til bilder</Text>
             </TouchableOpacity>
           </View>
-          {!project.budgetPlanned && (
+          {(!project.budgetPlanned || project.budgetPlanned <= 0) && (
             <TouchableOpacity style={styles.inlineCta} onPress={onEditProject}>
-              <Ionicons name="pricetag" size={16} color={theme.primary} />
+              <Feather name="tag" size={16} color={theme.primary} />
               <Text style={styles.inlineCtaText}>Legg til budsjett</Text>
             </TouchableOpacity>
           )}
@@ -148,7 +162,7 @@ export const ProjectDetailModal = ({
             <Text style={styles.statValue}>
               {goalTotalCount ? `${goalDoneCount}/${goalTotalCount}` : '—'}
             </Text>
-            <Text style={styles.statSub}>{goalTotalCount ? 'Hold framdriften' : 'Ingen mål lagt til'}</Text>
+            {goalTotalCount ? null : <Text style={styles.statSub}>Ingen mål lagt til</Text>}
           </View>
           <View style={styles.statCard}>
             <Text style={styles.statLabel}>Status</Text>
@@ -157,7 +171,7 @@ export const ProjectDetailModal = ({
           </View>
         </View>
 
-        {project.budgetPlanned ? (
+        {project.budgetPlanned && project.budgetPlanned > 0 ? (
           <View style={styles.budgetCard}>
             <View style={styles.sectionHeaderRow}>
               <Text style={styles.sectionHeader}>Budsjett</Text>
@@ -198,11 +212,9 @@ export const ProjectDetailModal = ({
                 return (
                   <View key={goal.id} style={[styles.goalRow, isDone && styles.goalRowDone]}>
                     <TouchableOpacity style={styles.goalCheck} onPress={() => onToggleGoal(goal)}>
-                      <Ionicons
-                        name={isDone ? 'checkmark-circle' : 'ellipse-outline'}
-                        size={20}
-                        color={isDone ? theme.success : theme.textDim}
-                      />
+                      <View style={[styles.goalCheckBox, isDone && styles.goalCheckBoxDone]}>
+                        {isDone ? <Feather name="check" size={14} color="#0F172A" /> : null}
+                      </View>
                     </TouchableOpacity>
                     <TouchableOpacity style={styles.goalContent} onPress={() => onEditGoal(goal)}>
                       <Text style={[styles.goalTitle, isDone && styles.goalTitleDone]}>
@@ -216,7 +228,7 @@ export const ProjectDetailModal = ({
                       ) : null}
                     </TouchableOpacity>
                     <TouchableOpacity style={styles.goalDelete} onPress={() => onDeleteGoal(goal)}>
-                      <Ionicons name="trash-outline" size={16} color={theme.textDim} />
+                      <Feather name="trash-2" size={16} color={theme.textDim} />
                     </TouchableOpacity>
                   </View>
                 );

@@ -9,42 +9,34 @@ import {
   useColorScheme,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
-
 import { Fonts } from '@/constants/theme';
 
 const LIGHT_THEME = {
-  background: ['#F2F2F7', '#FFFFFF', '#E9EEF6'],
-  card: '#FFFFFF',
-  cardBorder: '#E5E5EA',
-  title: '#1C1C1E',
-  subtitle: '#6B7280',
-  text: '#1C1C1E',
-  textDim: '#8E8E93',
-  inputBg: '#F9FAFB',
-  inputBorder: '#D1D5DB',
-  primary: '#0A84FF',
-  primaryText: '#FFFFFF',
-  accent: '#BF5AF2',
-  orbOne: 'rgba(191, 90, 242, 0.18)',
-  orbTwo: 'rgba(10, 132, 255, 0.18)',
+  background: '#F1F5F9',
+  surface: '#E2E8F0',
+  border: '#CBD5E1',
+  title: '#0F172A',
+  subtitle: '#475569',
+  text: '#0F172A',
+  textDim: '#64748B',
+  inputBg: '#E2E8F0',
+  inputBorder: '#CBD5E1',
+  primary: '#EA580C',
+  primaryText: '#0F172A',
 };
 
 const DARK_THEME = {
-  background: ['#0B0D10', '#14171C', '#0B0D10'],
-  card: '#14171C',
-  cardBorder: '#232834',
-  title: '#F2F2F7',
-  subtitle: '#9CA3AF',
-  text: '#E5E7EB',
-  textDim: '#9CA3AF',
-  inputBg: '#1C1F26',
-  inputBorder: '#2F3544',
-  primary: '#0A84FF',
-  primaryText: '#FFFFFF',
-  accent: '#BF5AF2',
-  orbOne: 'rgba(191, 90, 242, 0.28)',
-  orbTwo: 'rgba(10, 132, 255, 0.22)',
+  background: '#0F172A',
+  surface: '#1E293B',
+  border: '#334155',
+  title: '#F8FAFC',
+  subtitle: '#94A3B8',
+  text: '#F8FAFC',
+  textDim: '#94A3B8',
+  inputBg: '#1E293B',
+  inputBorder: '#334155',
+  primary: '#F97316',
+  primaryText: '#0F172A',
 };
 
 export const useAuthStyles = () => {
@@ -65,9 +57,7 @@ export function AuthShell({ title, subtitle, children, footer }: AuthShellProps)
   const { theme, styles } = useAuthStyles();
 
   return (
-    <LinearGradient colors={theme.background} style={styles.background}>
-      <View style={[styles.orb, styles.orbOne, { backgroundColor: theme.orbOne }]} />
-      <View style={[styles.orb, styles.orbTwo, { backgroundColor: theme.orbTwo }]} />
+    <View style={styles.background}>
       <SafeAreaView style={styles.safeArea}>
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -78,7 +68,7 @@ export function AuthShell({ title, subtitle, children, footer }: AuthShellProps)
             keyboardShouldPersistTaps="handled"
           >
             <View style={styles.header}>
-              <Text style={styles.brand}>Hanskerommet</Text>
+              <Text style={styles.brand}>HANSKEROMMET</Text>
               <Text style={styles.title}>{title}</Text>
               {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
             </View>
@@ -87,7 +77,7 @@ export function AuthShell({ title, subtitle, children, footer }: AuthShellProps)
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
-    </LinearGradient>
+    </View>
   );
 }
 
@@ -95,6 +85,7 @@ const createStyles = (theme: typeof LIGHT_THEME) =>
   StyleSheet.create({
     background: {
       flex: 1,
+      backgroundColor: theme.background,
     },
     safeArea: {
       flex: 1,
@@ -110,93 +101,87 @@ const createStyles = (theme: typeof LIGHT_THEME) =>
       justifyContent: 'center',
     },
     header: {
+      alignItems: 'center',
       marginBottom: 18,
     },
     brand: {
-      fontFamily: Fonts.rounded,
-      fontSize: 16,
-      color: theme.accent,
-      marginBottom: 8,
+      fontFamily: Fonts.mono,
+      fontSize: 20,
+      color: theme.primary,
+      marginBottom: 10,
+      letterSpacing: 2,
     },
     title: {
-      fontFamily: Fonts.rounded,
-      fontSize: 28,
-      fontWeight: '700',
+      fontFamily: Fonts.sans,
+      fontSize: 24,
+      fontWeight: '800',
       color: theme.title,
+      textTransform: 'uppercase',
     },
     subtitle: {
       marginTop: 6,
-      fontSize: 15,
+      fontSize: 14,
       color: theme.subtitle,
+      textAlign: 'center',
     },
     card: {
-      backgroundColor: theme.card,
-      borderRadius: 18,
+      backgroundColor: theme.surface,
+      borderRadius: 8,
       padding: 18,
       borderWidth: 1,
-      borderColor: theme.cardBorder,
-      shadowColor: '#000',
-      shadowOpacity: 0.08,
-      shadowRadius: 12,
-      shadowOffset: { width: 0, height: 6 },
-      elevation: 3,
+      borderColor: theme.border,
     },
     footer: {
       marginTop: 18,
       alignItems: 'center',
     },
     label: {
-      fontSize: 13,
-      fontWeight: '600',
+      fontSize: 14,
+      fontWeight: '700',
       color: theme.textDim,
       marginBottom: 6,
+      textTransform: 'uppercase',
+      letterSpacing: 0.6,
     },
     input: {
       borderWidth: 1,
       borderColor: theme.inputBorder,
-      borderRadius: 12,
+      borderRadius: 8,
       paddingHorizontal: 12,
       paddingVertical: 12,
+      minHeight: 48,
       fontSize: 16,
       color: theme.text,
       marginBottom: 12,
       backgroundColor: theme.inputBg,
+      fontFamily: Fonts.mono,
     },
     primaryButton: {
       backgroundColor: theme.primary,
-      borderRadius: 12,
-      paddingVertical: 12,
+      borderRadius: 8,
+      paddingVertical: 14,
+      minHeight: 48,
       alignItems: 'center',
       marginTop: 4,
     },
     primaryText: {
-      fontWeight: '700',
+      fontWeight: '800',
       color: theme.primaryText,
       fontSize: 16,
+      letterSpacing: 1,
     },
     link: {
       marginTop: 10,
-      color: theme.accent,
-      fontWeight: '600',
+      color: theme.text,
+      fontWeight: '700',
+      textTransform: 'uppercase',
     },
     helper: {
       marginTop: 8,
       color: theme.textDim,
-      fontSize: 12,
+      fontSize: 14,
     },
-    orb: {
-      position: 'absolute',
-      width: 280,
-      height: 280,
-      borderRadius: 140,
-      opacity: 0.9,
-    },
-    orbOne: {
-      top: -80,
-      right: -120,
-    },
-    orbTwo: {
-      bottom: -100,
-      left: -130,
-    },
+    orb: {},
+    orbOne: {},
+    orbTwo: {},
   });

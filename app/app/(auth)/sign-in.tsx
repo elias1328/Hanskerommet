@@ -64,7 +64,7 @@ export default function SignInScreen() {
       />
 
       <Pressable style={styles.primaryButton} onPress={handleSignIn} disabled={loading}>
-        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Logg inn</Text>}
+        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>LOGG INN</Text>}
       </Pressable>
 
       <Link href="/(auth)/forgot-password" style={styles.link}>
