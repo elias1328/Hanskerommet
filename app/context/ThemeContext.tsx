@@ -39,6 +39,13 @@ const hexToRgba = (hex: string, alpha: number) => {
   return `rgba(${r},${g},${b},${alpha})`;
 };
 
+const mixColors = (a: string, b: string, amount: number) => {
+  const c1 = hexToRgb(a);
+  const c2 = hexToRgb(b);
+  const mix = (x: number, y: number) => Math.round(x + (y - x) * amount);
+  return `rgb(${mix(c1.r, c2.r)},${mix(c1.g, c2.g)},${mix(c1.b, c2.b)})`;
+};
+
 const adjustColor = (hex: string, amount: number) => {
   const { r, g, b } = hexToRgb(hex);
   const clamp = (value: number) => Math.max(0, Math.min(255, value));
@@ -64,7 +71,11 @@ const buildTheme = (preset: ThemePreset): AppTheme => {
   const card = preset.secondary;
   const cardBorder =
     preset.border ??
-    (scheme === 'light' ? adjustColor(preset.secondary, -18) : adjustColor(preset.secondary, 18));
+    mixColors(
+      preset.secondary,
+      preset.accent,
+      scheme === 'light' ? 0.12 : 0.18
+    );
   const surface = preset.secondary;
   const tabBarBg = hexToRgba(preset.primary, scheme === 'light' ? 0.92 : 0.95);
   const tabBarBorder = cardBorder;

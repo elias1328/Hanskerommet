@@ -210,6 +210,22 @@ const formatNumberWithSpaces = (value: string) => {
 const parseNumberWithSpaces = (value: string) =>
   parseInt(String(value || '').replace(/\s+/g, '').replace(/\D/g, ''), 10) || 0;
 
+const mixColors = (a: string, b: string, amount: number) => {
+  const toRgb = (hex: string) => {
+    const raw = hex.replace('#', '');
+    const normalized = raw.length === 3 ? raw.split('').map((c) => c + c).join('') : raw;
+    const int = parseInt(normalized, 16);
+    return { r: (int >> 16) & 255, g: (int >> 8) & 255, b: int & 255 };
+  };
+  const c1 = toRgb(a);
+  const c2 = toRgb(b);
+  const mix = (x: number, y: number) => Math.round(x + (y - x) * amount);
+  return `rgb(${mix(c1.r, c2.r)},${mix(c1.g, c2.g)},${mix(c1.b, c2.b)})`;
+};
+
+const getPresetBorder = (preset: ThemePreset) =>
+  preset.border ?? mixColors(preset.secondary, preset.accent, preset.scheme === 'light' ? 0.12 : 0.18);
+
 const notifyCopied = () => {
   if (Platform.OS === 'android') ToastAndroid.show('Kopiert', ToastAndroid.SHORT);
   Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -2324,7 +2340,7 @@ function AppInner() {
                                 <Text style={styles.settingsLabel}>{preset.name}</Text>
                               </View>
                               <View style={{ flexDirection: 'row', gap: 10 }}>
-                                {[preset.primary, preset.secondary, preset.accent].map((color) => (
+                                {[preset.primary, preset.secondary, preset.accent, getPresetBorder(preset)].map((color) => (
                                   <View
                                     key={color}
                                     style={{
@@ -2384,6 +2400,8 @@ export default function App() {
 const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, onEditLog, onDeleteLog, onOpenLogPhotos, units, projects, logMedia, onOpenSettings, onSwitchCar, onShowCopyMenu }: any) => {
   const { theme } = useTheme();
   const styles = useStyles();
+  const insets = useSafeAreaInsets();
+  const [headerHeight, setHeaderHeight] = useState(0);
   const projectNameById = React.useMemo(() => {
     const acc: Record<string, string> = {};
     (projects || []).forEach((p: Project) => {
@@ -2416,21 +2434,24 @@ const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, onEd
   const BrandLogo = getBrandLogo(safeCar.make);
 
   return (
-    <ScrollView
-      style={{ flex: 1, backgroundColor: theme.bg }}
-      contentContainerStyle={{ paddingBottom: 140 }}
-    >
-      <View style={styles.headerBar}>
-        <Text style={styles.headerTitle}>MIN BIL</Text>
-        <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-          <TouchableOpacity style={[styles.secondaryBtnSmall, { justifyContent: 'center', alignItems: 'center' }]} onPress={onSwitchCar}>
-            <Text style={styles.secondaryBtnText}>BYTT BIL</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.headerIconBtnGhost} onPress={onOpenSettings}>
-            <Feather name="settings" size={20} color={theme.textDim} />
-          </TouchableOpacity>
+    <View style={{ flex: 1, backgroundColor: theme.bg }}>
+      <View style={[styles.stickyHeader, { paddingTop: insets.top }]} onLayout={(e) => setHeaderHeight(e.nativeEvent.layout.height)}>
+        <View style={styles.headerBar}>
+          <Text style={styles.headerTitle}>MIN BIL</Text>
+          <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+            <TouchableOpacity style={[styles.secondaryBtnSmall, { justifyContent: 'center', alignItems: 'center' }]} onPress={onSwitchCar}>
+              <Text style={styles.secondaryBtnText}>BYTT BIL</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.headerIconBtnGhost} onPress={onOpenSettings}>
+              <Feather name="settings" size={20} color={theme.textDim} />
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
+      <ScrollView
+        style={{ flex: 1, backgroundColor: theme.bg }}
+        contentContainerStyle={{ paddingTop: Math.max(0, headerHeight - 8), paddingBottom: 140 }}
+      >
 
       <View style={styles.specSheet}>
         <View style={styles.specRow}>
@@ -2540,6 +2561,7 @@ const GarageScreen = ({ car, logs, onOpenLog, onOpenMileage, onViewAllLogs, onEd
       </View>
 
     </ScrollView>
+    </View>
   );
 };
 
@@ -2556,6 +2578,8 @@ const VaultScreen = ({
 }) => {
   const { theme } = useTheme();
   const styles = useStyles();
+  const insets = useSafeAreaInsets();
+  const [headerHeight, setHeaderHeight] = useState(0);
   const [filterType, setFilterType] = useState<DocType | 'all'>('all');
   const [viewerDoc, setViewerDoc] = useState<Doc | null>(null);
   const [docFormVisible, setDocFormVisible] = useState(false);
@@ -2688,20 +2712,26 @@ const VaultScreen = ({
   return (
     <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
       <View style={styles.screenContainer}>
-        <View style={styles.pageHeaderRow}>
-          <View>
-            <Text style={styles.pageTitle}>Dokumenter</Text>
-            <Text style={styles.pageSub}>Hold dokumentene trygge og klare.</Text>
+        <View style={[styles.stickyHeader, { paddingTop: insets.top }]} onLayout={(e) => setHeaderHeight(e.nativeEvent.layout.height)}>
+          <View style={[styles.pageHeaderRow, { marginBottom: 4, paddingHorizontal: 20, paddingTop: 0, paddingBottom: 6 }]}>
+            <View>
+              <Text style={styles.pageTitle}>Dokumenter</Text>
+              <Text style={styles.pageSub}>Hold dokumentene trygge og klare.</Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.headerIconBtnGhost, { backgroundColor: theme.primary, borderColor: theme.primary }]}
+              onPress={openAddDocument}
+            >
+              <Feather name="plus" size={18} color={theme.onAccent} />
+            </TouchableOpacity>
           </View>
-          <TouchableOpacity
-            style={[styles.headerIconBtnGhost, { backgroundColor: theme.primary, borderColor: theme.primary }]}
-            onPress={openAddDocument}
-          >
-            <Feather name="plus" size={18} color={theme.onAccent} />
-          </TouchableOpacity>
         </View>
 
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 12 }}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ gap: 8, paddingBottom: 12, paddingTop: Math.max(0, headerHeight - 8), paddingHorizontal: 20 }}
+      >
         {typeFilters.map((filter) => {
           const active = filterType === filter.key;
           const compact = filteredDocs.length === 0;
@@ -2918,6 +2948,8 @@ const TimelineScreen = ({
 }) => {
   const { theme } = useTheme();
   const styles = useStyles();
+  const insets = useSafeAreaInsets();
+  const [headerHeight, setHeaderHeight] = useState(0);
   const projectNameById = React.useMemo(() => {
     const acc: Record<string, string> = {};
     (projects || []).forEach((p: Project) => {
@@ -2936,27 +2968,26 @@ const TimelineScreen = ({
   return (
     <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
       <View style={styles.screenContainer}>
+        <View style={[styles.stickyHeader, { paddingTop: insets.top }]} onLayout={(e) => setHeaderHeight(e.nativeEvent.layout.height)}>
+          <View style={[styles.pageHeaderRow, { marginBottom: 4, paddingHorizontal: 20, paddingTop: 0, paddingBottom: 6 }]}>
+            <View>
+              <Text style={styles.pageTitle}>SERVICELOGG</Text>
+              <Text style={styles.pageSub}>Historikk og vedlikehold.</Text>
+            </View>
+            <TouchableOpacity style={styles.headerIconBtn} onPress={onOpenLog}>
+              <Feather name="plus" size={20} color={theme.onAccent} />
+            </TouchableOpacity>
+          </View>
+        </View>
         <FlatList
           style={{ backgroundColor: theme.bg }}
           data={globalLogs}
           extraData={themeKey}
           keyExtractor={(l) => l.id}
-          contentContainerStyle={{ paddingBottom: 100 }}
+          contentContainerStyle={{ paddingTop: Math.max(0, headerHeight - 8), paddingBottom: 100, paddingHorizontal: 20 }}
           ListHeaderComponent={
-            <View>
-              <View style={styles.pageHeaderRow}>
-                <View>
-                  <Text style={styles.pageTitle}>SERVICELOGG</Text>
-                  <Text style={styles.pageSub}>Historikk og vedlikehold.</Text>
-                </View>
-                <TouchableOpacity style={styles.headerIconBtn} onPress={onOpenLog}>
-                  <Feather name="plus" size={20} color={theme.onAccent} />
-                </TouchableOpacity>
-              </View>
-
-              <View style={{ marginBottom: 12 }}>
-                <Text style={styles.sectionTitle}>TIDSLOGG</Text>
-              </View>
+            <View style={{ marginBottom: 12 }}>
+              <Text style={styles.sectionTitle}>TIDSLOGG</Text>
             </View>
           }
           renderItem={({ item }) => (
@@ -2997,6 +3028,8 @@ const ProjectsScreen = ({
 }) => {
   const { theme } = useTheme();
   const styles = useStyles();
+  const insets = useSafeAreaInsets();
+  const [headerHeight, setHeaderHeight] = useState(0);
   const activeProjects = (projects || []).filter((p) => p.status !== 'done');
   const completedProjects = (projects || []).filter((p) => p.status === 'done');
   const goalList = goals || [];
@@ -3010,19 +3043,22 @@ const ProjectsScreen = ({
   const nextGoalForProject = (projectId: string) =>
     goalsForProject(projectId).find((g) => g.status !== 'done') || null;
   return (
-    <ScrollView
-      style={{ flex: 1, backgroundColor: theme.bg }}
-      contentContainerStyle={{ paddingBottom: 120, paddingHorizontal: 20, paddingTop: 20 }}
-    >
-      <View style={[styles.pageHeaderRow, { alignItems: 'center' }]}>
-        <View>
-          <Text style={styles.pageTitle}>Prosjekter</Text>
-          <Text style={styles.pageSub}>Samle arbeid i fokuserte prosjekter.</Text>
+    <View style={{ flex: 1, backgroundColor: theme.bg }}>
+      <View style={[styles.stickyHeader, { paddingTop: insets.top }]} onLayout={(e) => setHeaderHeight(e.nativeEvent.layout.height)}>
+        <View style={[styles.pageHeaderRow, { alignItems: 'center', marginBottom: 4, paddingHorizontal: 20, paddingTop: 0, paddingBottom: 6 }]}>
+          <View>
+            <Text style={styles.pageTitle}>Prosjekter</Text>
+            <Text style={styles.pageSub}>Samle arbeid i fokuserte prosjekter.</Text>
+          </View>
+          <TouchableOpacity style={[styles.headerIconBtnGhost, { backgroundColor: theme.primary, borderColor: theme.primary }]} onPress={onStartProject}>
+            <Feather name="plus" size={18} color={theme.onAccent} />
+          </TouchableOpacity>
         </View>
-        <TouchableOpacity style={[styles.headerIconBtnGhost, { backgroundColor: theme.primary, borderColor: theme.primary }]} onPress={onStartProject}>
-          <Feather name="plus" size={18} color={theme.onAccent} />
-        </TouchableOpacity>
       </View>
+      <ScrollView
+        style={{ flex: 1, backgroundColor: theme.bg }}
+        contentContainerStyle={{ paddingBottom: 120, paddingHorizontal: 20, paddingTop: Math.max(0, headerHeight - 8) }}
+      >
 
       {activeProject && (
         <TouchableOpacity style={styles.activeProjectCard} onPress={() => onOpenProject(activeProject.id)}>
@@ -3189,6 +3225,7 @@ const ProjectsScreen = ({
         </View>
       )}
     </ScrollView>
+    </View>
   );
 };
 
